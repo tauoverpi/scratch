@@ -16,7 +16,7 @@ const Op = packed enum(u4) {
     Xor, // bitwise xor
     Ror, // roll right
     Rol, // roll left
-    Skp, // skip next if zero
+    Inv, // invert value
 };
 
 const OpCode = packed struct { reg: u4, op: Op };
@@ -45,39 +45,32 @@ const Program = struct {
     pub fn run(self: Program, input: u32) u32 {
         var register = std.mem.zeroes([16]u32);
         register[0] = input;
-        var skip = false;
         for (self.program) |op| {
-            if (!skip) {
-                switch (op.op) {
-                    .Nop => {},
-                    .Add => register[0] +%= register[op.reg],
-                    .Sub => register[0] -%= register[op.reg],
-                    .Mul => register[0] *%= register[op.reg],
-                    .Lit => register[0] = op.reg,
-                    .Lda => register[0] = register[op.reg],
-                    .Sta => register[op.reg] = register[0],
-                    .Pop => register[0] = @popCount(u32, register[op.reg]),
-                    .Shl => register[0] <<= @truncate(u5, register[op.reg]),
-                    .Shr => register[0] >>= @truncate(u5, register[op.reg]),
-                    .And => register[0] |= register[op.reg],
-                    .Or => register[0] |= register[op.reg],
-                    .Xor => register[0] |= register[op.reg],
-                    .Ror => {
-                        const left = register[0] << @truncate(u5, 32 - register[op.reg]);
-                        const right = register[0] >> @truncate(u5, register[op.reg]);
-                        register[0] = left + right;
-                    },
-                    .Rol => {
-                        const left = register[0] >> @truncate(u5, 32 - register[op.reg]);
-                        const right = register[0] << @truncate(u5, register[op.reg]);
-                        register[0] = left + right;
-                    },
-                    .Skp => if (register[0] == 0) {
-                        skip = true;
-                    },
-                }
-            } else {
-                skip = false;
+            switch (op.op) {
+                .Nop => {},
+                .Add => register[0] +%= register[op.reg],
+                .Sub => register[0] -%= register[op.reg],
+                .Mul => register[0] *%= register[op.reg],
+                .Lit => register[0] = op.reg,
+                .Lda => register[0] = register[op.reg],
+                .Sta => register[op.reg] = register[0],
+                .Pop => register[0] = @popCount(u32, register[op.reg]),
+                .Shl => register[0] <<= @truncate(u5, register[op.reg]),
+                .Shr => register[0] >>= @truncate(u5, register[op.reg]),
+                .And => register[0] |= register[op.reg],
+                .Or => register[0] |= register[op.reg],
+                .Xor => register[0] |= register[op.reg],
+                .Ror => {
+                    const left = register[0] << @truncate(u5, 32 - register[op.reg]);
+                    const right = register[0] >> @truncate(u5, register[op.reg]);
+                    register[0] = left + right;
+                },
+                .Rol => {
+                    const left = register[0] >> @truncate(u5, 32 - register[op.reg]);
+                    const right = register[0] << @truncate(u5, register[op.reg]);
+                    register[0] = left + right;
+                },
+                .Inv => register[0] = ~register[0],
             }
         }
         return register[0];
@@ -100,4 +93,11 @@ test "" {
     };
     program = Program.init(buffer[0..]);
     std.debug.assert(program.run(1) == 1);
+    buffer = [_]OpCode{
+        .{ .reg = 1, .op = .Nop },
+        .{ .reg = 1, .op = .Nop },
+        .{ .reg = 1, .op = .Inv },
+    };
+    program = Program.init(buffer[0..]);
+    std.debug.assert(program.run(0) == 0xffffffff);
 }
