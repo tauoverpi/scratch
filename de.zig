@@ -63,14 +63,14 @@ const Program = struct {
                     .Or => register[0] |= register[op.reg],
                     .Xor => register[0] |= register[op.reg],
                     .Ror => {
-                        const left = register[0] >> @truncate(u5, register[op.reg]);
-                        const right = register[0] << (31 - @truncate(u5, register[op.reg]));
-                        register[0] = left | right;
+                        const left = register[0] << @truncate(u5, 32 - register[op.reg]);
+                        const right = register[0] >> @truncate(u5, register[op.reg]);
+                        register[0] = left + right;
                     },
                     .Rol => {
-                        const left = register[0] << @truncate(u5, register[op.reg]);
-                        const right = register[0] >> (31 - @truncate(u5, register[op.reg]));
-                        register[0] = left | right;
+                        const left = register[0] >> @truncate(u5, 32 - register[op.reg]);
+                        const right = register[0] << @truncate(u5, register[op.reg]);
+                        register[0] = left + right;
                     },
                     .Skp => if (register[0] == 0) {
                         skip = true;
@@ -85,11 +85,19 @@ const Program = struct {
 };
 
 test "" {
+    std.debug.print("\n", .{});
     var buffer = [_]OpCode{
         .{ .reg = 1, .op = .Sta },
         .{ .reg = 0, .op = .Add },
         .{ .reg = 1, .op = .Shr },
     };
     var program = Program.init(buffer[0..]);
+    std.debug.assert(program.run(1) == 1);
+    buffer = [_]OpCode{
+        .{ .reg = 1, .op = .Sta },
+        .{ .reg = 1, .op = .Ror },
+        .{ .reg = 1, .op = .Rol },
+    };
+    program = Program.init(buffer[0..]);
     std.debug.assert(program.run(1) == 1);
 }
