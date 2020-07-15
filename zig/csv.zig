@@ -139,13 +139,13 @@ const TokenStream = struct {
             p.token = null;
             return tok;
         }
-        if (p.index >= p.text.len) return null;
+        if (p.index > p.text.len) return null;
         for (p.text[p.index..]) |byte, i| {
             if (try p.sp.feed(byte, &p.token)) |item| {
                 p.index += i + 1;
                 return item;
             }
-        } else p.index += i;
+        } else p.index += i + 1;
         if (p.sp.state == .Item or p.sp.state == .Skip) {
             return try p.sp.feed('\n', &p.token);
         }
@@ -156,7 +156,7 @@ const TokenStream = struct {
 test "token stream" {
     const text =
         \\one,two,,
-        \\three,four
+        \\three,four,
     ;
     var p = TokenStream.init(text, .{});
     var token: ?Token = null;
@@ -179,6 +179,7 @@ test "token stream" {
         Token{ .Item = .{ .offset = 0, .len = 4 } },
         (try p.next()).?,
     );
+    std.testing.expectEqual(Token.Empty, (try p.next()).?);
     std.testing.expectEqual(Token.End, (try p.next()).?);
     std.testing.expectEqual(@as(?Token, null), try p.next());
 }
@@ -238,7 +239,7 @@ pub fn parseLine(comptime T: type, stream: *TokenStream) !T {
 }
 
 test "line parser" {
-    var p = TokenStream.init("1,ok,4.5,\n", .{});
+    var p = TokenStream.init("1,ok,4.5,", .{});
     const T = struct { i: usize, e: enum { ok }, f: f32, n: ?u1 };
     const expected: T = .{ .i = 1, .e = .ok, .f = 4.5, .n = null };
     std.testing.expectEqual(expected, try parseLine(T, &p));
