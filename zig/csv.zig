@@ -187,7 +187,10 @@ test "token stream" {
 fn parseColumn(comptime T: type, token: Token, text: []const u8, i: usize) !T {
     switch (@typeInfo(T)) {
         .Enum => |info| switch (token) {
-            .Item => |item| return std.meta.stringToEnum(T, item.slice(text, i)) orelse error.InvalidEnum,
+            .Item => |item| return std.meta.stringToEnum(
+                T,
+                item.slice(text, i),
+            ) orelse error.InvalidEnum,
             else => return error.ExpectedEnum,
         },
         .Int => |info| switch (token) {
@@ -243,4 +246,63 @@ test "line parser" {
     const T = struct { i: usize, e: enum { ok }, f: f32, n: ?u1 };
     const expected: T = .{ .i = 1, .e = .ok, .f = 4.5, .n = null };
     std.testing.expectEqual(expected, try parseLine(T, &p));
+}
+
+fn stringifyColumn(
+    comptime T: type,
+    value: anytype,
+    out_stream: anytype,
+) @TypeOf(out_stream).Error!void {
+    switch (@typeInfo(T)) {
+        .Float, .ComptimeFloat => try std.fmt.formatFloatScientific(value, std.fmt.FormatOptions{}, out_stream),
+        .Int, .ComptimeInt => try std.fmt.formatIntValue(value, "", std.fmt.FormatOptions{}, out_stream),
+        .Enum => |info| {
+            inline for (info.fields) |field| {
+                if (value == std.meta.stringToEnum(T, field.name).?) {
+                    try out_stream.writeAll(field.name);
+                    return;
+                }
+            }
+        },
+        .Pointer => |info| {
+            if (!info.is_const or info.child != u8) @compileError("only []const u8 supported");
+            try out_stream.writeAll(value);
+        },
+        else => @compileLog(T),
+    }
+}
+
+pub const StringifyOptions = struct {
+    delimiter: u8 = ',',
+};
+
+pub fn stringifyLine(
+    value: anytype,
+    options: StringifyOptions,
+    out_stream: anytype,
+) @TypeOf(out_stream).Error!void {
+    const T = @TypeOf(value);
+    switch (@typeInfo(T)) {
+        .Struct => |info| {
+            comptime var comma = false;
+            inline for (info.fields) |field| {
+                if (comma) try out_stream.writeAll(",");
+                switch (@typeInfo(field.field_type)) {
+                    .Optional => |optional| if (@field(value, field.name)) |opt| {
+                        try stringifyColumn(optional.child, opt, out_Stream);
+                    } else
+                        try out_stream.writeAll(","),
+                    else => try stringifyColumn(field.field_type, @field(value, field.name), out_stream),
+                }
+                comma = true;
+            }
+        },
+        else => @compileError("unsupported type " ++ @typeName(T)),
+    }
+}
+
+test "stringify" {
+    const out = std.io.getStdOut().writer();
+    const T = enum { ok };
+    try stringifyLine(.{ .f = 4.4, .i = 4, .e = T.ok, .s = @as([]const u8, "a thing") }, .{}, out);
 }
