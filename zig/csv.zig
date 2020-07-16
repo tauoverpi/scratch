@@ -8,6 +8,7 @@ pub const Token = union(enum) {
     Item: struct {
         offset: usize,
         len: usize,
+
         pub fn slice(t: @This(), text: []const u8, index: usize) []const u8 {
             return text[index - (t.len + 1) .. (index - 1) - t.offset];
         }
@@ -56,6 +57,7 @@ pub const StreamingParser = struct {
                 },
                 else => p.count += 1,
             },
+
             .Skip => switch (c) {
                 '\n' => {
                     p.count = 0;
@@ -71,12 +73,14 @@ pub const StreamingParser = struct {
                     p.count = 0;
                 },
             },
+
             .Crlf => if (c != '\n') {
                 return error.MissingLineFeed;
             } else {
                 p.state = .Item;
                 p.count = 0;
             },
+
             .Item => if (c == p.delimiter or c == '\r' or c == '\n') {
                 var tok: Token = undefined;
                 if (p.count == 0) {
@@ -141,14 +145,15 @@ pub const TokenStream = struct {
         if (p.token) |tok| {
             p.token = null;
             return tok;
-        }
-        if (p.index > p.text.len) return null;
+        } else if (p.index > p.text.len) return null;
+
         for (p.text[p.index..]) |byte, i| {
             if (try p.sp.feed(byte, &p.token)) |item| {
                 p.index += i + 1;
                 return item;
             }
         } else p.index += i + 1;
+
         if (p.sp.state == .Item or p.sp.state == .Skip) {
             return try p.sp.feed('\n', &p.token);
         }
@@ -196,14 +201,17 @@ fn parseColumnInternal(comptime T: type, token: Token, text: []const u8, i: usiz
             ) orelse error.InvalidEnum,
             else => return error.ExpectedEnum,
         },
+
         .Int => |info| switch (token) {
             .Item => |item| return try std.fmt.parseInt(T, item.slice(text, i), 10),
             else => return error.ExpectedInt,
         },
+
         .Float => |info| switch (token) {
             .Item => |item| return try std.fmt.parseFloat(T, item.slice(text, i)),
             else => return error.ExpectedFloat,
         },
+
         .Pointer => |info| {
             if (!info.is_const or info.child != u8) @compileError("only []const u8 supported");
             return switch (token) {
@@ -212,6 +220,7 @@ fn parseColumnInternal(comptime T: type, token: Token, text: []const u8, i: usiz
                 else => error.ExpectedString,
             };
         },
+
         .Optional => |info| switch (token) {
             .Item => return try parseColumnInternal(info.child, token, text, i),
             .Empty => return null,
@@ -220,6 +229,7 @@ fn parseColumnInternal(comptime T: type, token: Token, text: []const u8, i: usiz
                 return error.ExpectedItemOrNull;
             },
         },
+
         else => @compileError(@typeName(T) ++ " not supported"),
     }
 }
@@ -260,21 +270,23 @@ pub fn parseLine(
             var count: usize = 0;
 
             inline for (info.fields) |field, i| {
-                count += 1;
                 // TODO: must be written like this otherwise the compiler segfaults
                 const token = (try stream.next()) orelse {
                     if (i == 0) {
                         return error.EmptyLine;
                     } else return error.UnexpectedEndOfColumns;
                 };
+
                 // allow skipping optional fields
                 if (options.allow_missing_fields) {
+                    count += 1;
                     if (token == .End and count >= computed.required) {
                         return r;
                     }
                 } else {
                     if (token == .End) return error.ColumnTooShort;
                 }
+
                 // set the field if it's not void
                 if (@typeInfo(field.field_type) != .Void) {
                     @field(r, field.name) = try parseColumnInternal(
