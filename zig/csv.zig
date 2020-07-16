@@ -195,10 +195,20 @@ test "token stream" {
 fn parseColumnInternal(comptime T: type, token: Token, text: []const u8, i: usize) !T {
     switch (@typeInfo(T)) {
         .Enum => |info| switch (token) {
-            .Item => |item| return std.meta.stringToEnum(
-                T,
-                item.slice(text, i),
-            ) orelse error.InvalidEnum,
+            .Item => |item| {
+                const slice = item.slice(text, i);
+                blk: {
+                    if (@typeInfo(info.tag_type).Int.bits == 0) {
+                        // TODO: if this is u0 it produces invalid LLVM IR
+                        const num = std.fmt.parseInt(u1, slice, 10) catch break :blk;
+                        return try std.meta.intToEnum(T, num);
+                    } else {
+                        const num = std.fmt.parseInt(info.tag_type, slice, 10) catch break :blk;
+                        return try std.meta.intToEnum(T, num);
+                    }
+                }
+                return std.meta.stringToEnum(T, item.slice(text, i)) orelse return error.InvalidEnum;
+            },
             else => return error.ExpectedEnum,
         },
 
@@ -238,6 +248,12 @@ pub fn parseColumn(comptime T: type, stream: *TokenStream) !T {
     const token = (try stream.next()) orelse
         return error.UnexpectedEndOfColumns;
     return try parseColumnInternal(T, token, stream.text, stream.index);
+}
+
+test "column parser" {
+    var p = TokenStream.init("0", .{});
+    const T = enum { only };
+    std.testing.expectEqual(T.only, try parseColumn(T, &p));
 }
 
 pub const ParserComptimeOptions = struct {
