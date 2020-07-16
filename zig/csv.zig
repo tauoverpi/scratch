@@ -1,7 +1,7 @@
 const std = @import("std");
 const mem = std.mem;
 
-const Token = union(enum) {
+pub const Token = union(enum) {
     Item: struct {
         offset: usize,
         len: usize,
@@ -13,13 +13,13 @@ const Token = union(enum) {
     Empty,
 };
 
-const ParserOptions = struct {
+pub const ParserOptions = struct {
     delimiter: u8 = ',',
     comment: ?u8 = null,
     trim: bool = false,
 };
 
-const StreamingParser = struct {
+pub const StreamingParser = struct {
     count: usize,
     spaces: usize,
     comment: ?u8,
@@ -115,7 +115,7 @@ test "streaming parser" {
     }
 }
 
-const TokenStream = struct {
+pub const TokenStream = struct {
     sp: StreamingParser,
     text: []const u8,
     index: usize,
@@ -184,7 +184,7 @@ test "token stream" {
     std.testing.expectEqual(@as(?Token, null), try p.next());
 }
 
-fn parseColumn(comptime T: type, token: Token, text: []const u8, i: usize) !T {
+fn parseColumnInternal(comptime T: type, token: Token, text: []const u8, i: usize) !T {
     switch (@typeInfo(T)) {
         .Enum => |info| switch (token) {
             .Item => |item| return std.meta.stringToEnum(
@@ -210,32 +210,90 @@ fn parseColumn(comptime T: type, token: Token, text: []const u8, i: usize) !T {
             };
         },
         .Optional => |info| switch (token) {
-            .Item => return try parseColumn(info.child, token, text, i),
+            .Item => return try parseColumnInternal(info.child, token, text, i),
             .Empty => return null,
-            else => return error.ExpectedItemOrNull,
+            else => {
+                std.debug.print("{}\n", .{text[i .. i + 100]});
+                return error.ExpectedItemOrNull;
+            },
         },
         else => @compileError(@typeName(T) ++ " not supported"),
     }
 }
 
-pub fn parseLine(comptime T: type, stream: *TokenStream) !T {
+pub fn parseColumn(comptime T: type, stream: *TokenStream) !T {
+    const token = (try stream.next()) orelse
+        return error.UnexpectedEndOfColumns;
+    return try parseColumnInternal(T, token, stream.text, stream.index);
+}
+
+pub const ParserComptimeOptions = struct {
+    allow_missing_fields: bool = false,
+    allow_superflous_fields: bool = false,
+};
+
+pub fn parseLine(
+    comptime T: type,
+    stream: *TokenStream,
+    comptime options: ParserComptimeOptions,
+) !T {
     switch (@typeInfo(T)) {
         .Struct => |info| {
-            var r: T = undefined;
-            inline for (info.fields) |field| {
-                const token = (try stream.next()) orelse
-                    return error.UnexpectedEndOfColumn;
-                @field(r, field.name) = try parseColumn(
-                    field.field_type,
-                    token,
-                    stream.text,
-                    stream.index,
-                );
+            // initialize all null fields in case of configured early return
+            var r: T = comptime blk: {
+                var cr: T = undefined;
+                for (info.fields) |field, i| {
+                    const ti = @typeInfo(field.field_type);
+                    if (ti == .Optional) @field(cr, field.name) = null;
+                }
+                break :blk cr;
+            };
+            // calculate the number of fields we can safely skip when configured
+            comptime const required = blk: {
+                var lim: usize = 0;
+                for (info.fields) |field, i| {
+                    const ti = @typeInfo(field.field_type);
+                    if (ti != .Void or ti != .Optional) lim = i;
+                }
+                break :blk lim;
+            };
+            var count: usize = 0;
+            inline for (info.fields) |field, i| {
+                count += 1;
+                // must be written like this otherwise the compiler segfaults
+                const token = (try stream.next()) orelse {
+                    if (i == 0) {
+                        return error.EmptyLine;
+                    } else return error.UnexpectedEndOfColumns;
+                };
+                // allow skipping optional fields if configured
+                if (options.allow_missing_fields) {
+                    if (token == .End and count >= required) {
+                        return r;
+                    }
+                } else {
+                    if (token == .End) return error.ColumnTooShort;
+                }
+                // set the field if it's not void
+                if (@typeInfo(field.field_type) != .Void) {
+                    @field(r, field.name) = try parseColumnInternal(
+                        field.field_type,
+                        token,
+                        stream.text,
+                        stream.index,
+                    );
+                }
             }
-            if (try stream.next()) |item| {
-                if (item == .End) return r;
+            if (options.allow_superflous_fields) {
+                while (try stream.next()) |item| {
+                    if (item == .End) return r;
+                } else return r;
+            } else {
+                if (try stream.next()) |item| {
+                    if (item == .End) return r;
+                }
+                return error.ColumnTooLong;
             }
-            return error.ColumnTooLong;
         },
         else => |info| @compileError(@typeName(T) ++ " not supported, only structs"),
     }
@@ -245,7 +303,21 @@ test "line parser" {
     var p = TokenStream.init("1,ok,4.5,", .{});
     const T = struct { i: usize, e: enum { ok }, f: f32, n: ?u1 };
     const expected: T = .{ .i = 1, .e = .ok, .f = 4.5, .n = null };
-    std.testing.expectEqual(expected, try parseLine(T, &p));
+    std.testing.expectEqual(expected, try parseLine(T, &p, .{}));
+    p = TokenStream.init("more,fields,which,can,be,ignored", .{});
+    const T0 = struct { text: []const u8 };
+    std.testing.expect(std.mem.eql(
+        u8,
+        "more",
+        (try parseLine(T0, &p, .{ .allow_superflous_fields = true })).text,
+    ));
+    p = TokenStream.init("missing,ok", .{});
+    const T1 = struct { f: enum { missing }, s: enum { ok }, n: ?usize, v: void };
+    const expected1: T1 = .{ .f = .missing, .s = .ok, .n = null, .v = {} };
+    std.testing.expectEqual(
+        expected1,
+        try parseLine(T1, &p, .{ .allow_missing_fields = true }),
+    );
 }
 
 fn stringifyColumn(
@@ -292,7 +364,11 @@ pub fn stringifyLine(
                         try stringifyColumn(optional.child, opt, out_Stream);
                     } else
                         try out_stream.writeAll(","),
-                    else => try stringifyColumn(field.field_type, @field(value, field.name), out_stream),
+                    else => try stringifyColumn(
+                        field.field_type,
+                        @field(value, field.name),
+                        out_stream,
+                    ),
                 }
                 comma = true;
             }
@@ -305,4 +381,5 @@ test "stringify" {
     const out = std.io.getStdOut().writer();
     const T = enum { ok };
     try stringifyLine(.{ .f = 4.4, .i = 4, .e = T.ok, .s = @as([]const u8, "a thing") }, .{}, out);
+    try out.writeAll("\n");
 }
