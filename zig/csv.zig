@@ -197,17 +197,16 @@ fn parseColumnInternal(comptime T: type, token: Token, text: []const u8, i: usiz
         .Enum => |info| switch (token) {
             .Item => |item| {
                 const slice = item.slice(text, i);
-                blk: {
+                return std.meta.stringToEnum(T, item.slice(text, i)) orelse {
                     if (@typeInfo(info.tag_type).Int.bits == 0) {
                         // TODO: if this is u0 it produces invalid LLVM IR
-                        const num = std.fmt.parseInt(u1, slice, 10) catch break :blk;
-                        return try std.meta.intToEnum(T, num);
+                        const num = std.fmt.parseInt(u1, slice, 10) catch return error.InvaludEnum;
+                        return std.meta.intToEnum(T, num) catch return error.InvalidEnum;
                     } else {
-                        const num = std.fmt.parseInt(info.tag_type, slice, 10) catch break :blk;
-                        return try std.meta.intToEnum(T, num);
+                        const num = std.fmt.parseInt(info.tag_type, slice, 10) catch return error.InvalidEnum;
+                        return std.meta.intToEnum(T, num) catch return error.InvalidEnum;
                     }
-                }
-                return std.meta.stringToEnum(T, item.slice(text, i)) orelse return error.InvalidEnum;
+                };
             },
             else => return error.ExpectedEnum,
         },
