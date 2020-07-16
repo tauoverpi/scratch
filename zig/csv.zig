@@ -9,8 +9,8 @@ pub const Token = union(enum) {
             return text[index - (t.len + 1) .. (index - 1) - t.offset];
         }
     },
-    End,
     Empty,
+    End,
 };
 
 pub const ParserOptions = struct {
@@ -240,23 +240,19 @@ pub fn parseLine(
     switch (@typeInfo(T)) {
         .Struct => |info| {
             // initialize all null fields in case of configured early return
-            var r: T = comptime blk: {
+            // while calculating the number of fields we can safely skip
+            // when configured
+            comptime const computed = comptime blk: {
+                var lim: usize = 0;
                 var cr: T = undefined;
                 for (info.fields) |field, i| {
                     const ti = @typeInfo(field.field_type);
                     if (ti == .Optional) @field(cr, field.name) = null;
-                }
-                break :blk cr;
-            };
-            // calculate the number of fields we can safely skip when configured
-            comptime const required = blk: {
-                var lim: usize = 0;
-                for (info.fields) |field, i| {
-                    const ti = @typeInfo(field.field_type);
                     if (ti != .Void or ti != .Optional) lim = i;
                 }
-                break :blk lim;
+                break :blk .{ .result = cr, .required = lim };
             };
+            var r: T = computed.result;
             var count: usize = 0;
             inline for (info.fields) |field, i| {
                 count += 1;
@@ -268,7 +264,7 @@ pub fn parseLine(
                 };
                 // allow skipping optional fields if configured
                 if (options.allow_missing_fields) {
-                    if (token == .End and count >= required) {
+                    if (token == .End and count >= computed.required) {
                         return r;
                     }
                 } else {
