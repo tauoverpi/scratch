@@ -1,3 +1,6 @@
+// Copyright (c) 2020 Simon A. Nielsen Knights <tauoverpi@yandex.com>
+// License: MIT
+
 const std = @import("std");
 const mem = std.mem;
 
@@ -239,9 +242,9 @@ pub fn parseLine(
 ) !T {
     switch (@typeInfo(T)) {
         .Struct => |info| {
+
             // initialize all null fields in case of configured early return
             // while calculating the number of fields we can safely skip
-            // when configured
             comptime const computed = comptime blk: {
                 var lim: usize = 0;
                 var cr: T = undefined;
@@ -252,17 +255,19 @@ pub fn parseLine(
                 }
                 break :blk .{ .result = cr, .required = lim };
             };
+
             var r: T = computed.result;
             var count: usize = 0;
+
             inline for (info.fields) |field, i| {
                 count += 1;
-                // must be written like this otherwise the compiler segfaults
+                // TODO: must be written like this otherwise the compiler segfaults
                 const token = (try stream.next()) orelse {
                     if (i == 0) {
                         return error.EmptyLine;
                     } else return error.UnexpectedEndOfColumns;
                 };
-                // allow skipping optional fields if configured
+                // allow skipping optional fields
                 if (options.allow_missing_fields) {
                     if (token == .End and count >= computed.required) {
                         return r;
@@ -280,6 +285,8 @@ pub fn parseLine(
                     );
                 }
             }
+
+            // skip superflous fields
             if (options.allow_superflous_fields) {
                 while (try stream.next()) |item| {
                     if (item == .End) return r;
@@ -300,6 +307,7 @@ test "line parser" {
     const T = struct { i: usize, e: enum { ok }, f: f32, n: ?u1 };
     const expected: T = .{ .i = 1, .e = .ok, .f = 4.5, .n = null };
     std.testing.expectEqual(expected, try parseLine(T, &p, .{}));
+
     p = TokenStream.init("more,fields,which,can,be,ignored", .{});
     const T0 = struct { text: []const u8 };
     std.testing.expect(std.mem.eql(
@@ -307,6 +315,7 @@ test "line parser" {
         "more",
         (try parseLine(T0, &p, .{ .allow_superflous_fields = true })).text,
     ));
+
     p = TokenStream.init("missing,ok", .{});
     const T1 = struct { f: enum { missing }, s: enum { ok }, n: ?usize, v: void };
     const expected1: T1 = .{ .f = .missing, .s = .ok, .n = null, .v = {} };
@@ -353,13 +362,14 @@ pub fn stringifyLine(
     switch (@typeInfo(T)) {
         .Struct => |info| {
             comptime var comma = false;
-            inline for (info.fields) |field| {
-                if (comma) try out_stream.writeAll(",");
+            inline for (info.fields) |field, i| {
+                if (comma and info.fields.len - 1 != i) try out_stream.writeAll(",");
                 switch (@typeInfo(field.field_type)) {
                     .Optional => |optional| if (@field(value, field.name)) |opt| {
                         try stringifyColumn(optional.child, opt, out_Stream);
                     } else
                         try out_stream.writeAll(","),
+                    .Void => try out_stream.writeAll(","),
                     else => try stringifyColumn(
                         field.field_type,
                         @field(value, field.name),
@@ -376,6 +386,6 @@ pub fn stringifyLine(
 test "stringify" {
     const out = std.io.getStdOut().writer();
     const T = enum { ok };
-    try stringifyLine(.{ .f = 4.4, .i = 4, .e = T.ok, .s = @as([]const u8, "a thing") }, .{}, out);
+    try stringifyLine(.{ .f = 4.4, .i = 4, .e = T.ok, .s = @as([]const u8, "a thing"), .k = {} }, .{}, out);
     try out.writeAll("\n");
 }
