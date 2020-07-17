@@ -55,7 +55,7 @@ pub const StreamingParser = struct {
                     p.state = if (p.trim) .Skip else .Item;
                     p.count = 0;
                 },
-                else => p.count += 1,
+                else => {},
             },
 
             .Skip => switch (c) {
@@ -97,15 +97,13 @@ pub const StreamingParser = struct {
                 p.count = 0;
                 return tok;
             } else {
+                p.count += 1;
                 if (p.trim) {
                     if (c == ' ') {
                         p.spaces += 1;
                     } else {
                         p.spaces = 0;
-                        p.count += 1;
                     }
-                } else {
-                    p.count += 1;
                 }
             },
         }
@@ -134,6 +132,11 @@ pub const TokenStream = struct {
         p.text = text;
         p.reset();
         return p;
+    }
+
+    pub fn chunk(p: *TokenStream, text: []const u8) void {
+        p.text = text;
+        p.index = 0;
     }
 
     pub fn reset(p: *TokenStream) void {
@@ -166,27 +169,34 @@ test "token stream" {
         \\one,two,,
         \\three,four,
     ;
+
     var p = TokenStream.init(text, .{});
     var token: ?Token = null;
+
     std.testing.expectEqual(
         Token{ .Item = .{ .offset = 0, .len = 3 } },
         (try p.next()).?,
     );
+
     std.testing.expectEqual(
         Token{ .Item = .{ .offset = 0, .len = 3 } },
         (try p.next()).?,
     );
+
     std.testing.expectEqual(Token.Empty, (try p.next()).?);
     std.testing.expectEqual(Token.Empty, (try p.next()).?);
     std.testing.expectEqual(Token.End, (try p.next()).?);
+
     std.testing.expectEqual(
         Token{ .Item = .{ .offset = 0, .len = 5 } },
         (try p.next()).?,
     );
+
     std.testing.expectEqual(
         Token{ .Item = .{ .offset = 0, .len = 4 } },
         (try p.next()).?,
     );
+
     std.testing.expectEqual(Token.Empty, (try p.next()).?);
     std.testing.expectEqual(Token.End, (try p.next()).?);
     std.testing.expectEqual(@as(?Token, null), try p.next());
@@ -200,7 +210,7 @@ fn parseColumnInternal(comptime T: type, token: Token, text: []const u8, i: usiz
                 return std.meta.stringToEnum(T, item.slice(text, i)) orelse {
                     if (@typeInfo(info.tag_type).Int.bits == 0) {
                         // TODO: if this is u0 it produces invalid LLVM IR
-                        const num = std.fmt.parseInt(u1, slice, 10) catch return error.InvaludEnum;
+                        const num = std.fmt.parseInt(u1, slice, 10) catch return error.InvalidEnum;
                         return std.meta.intToEnum(T, num) catch return error.InvalidEnum;
                     } else {
                         const num = std.fmt.parseInt(info.tag_type, slice, 10) catch return error.InvalidEnum;
@@ -233,10 +243,7 @@ fn parseColumnInternal(comptime T: type, token: Token, text: []const u8, i: usiz
         .Optional => |info| switch (token) {
             .Item => return try parseColumnInternal(info.child, token, text, i),
             .Empty => return null,
-            else => {
-                std.debug.print("{}\n", .{text[i .. i + 100]});
-                return error.ExpectedItemOrNull;
-            },
+            else => return error.ExpectedItemOrNull,
         },
 
         else => @compileError(@typeName(T) ++ " not supported"),
@@ -299,7 +306,7 @@ pub fn parseLine(
                         return r;
                     }
                 } else {
-                    if (token == .End) return error.ColumnTooShort;
+                    if (token == .End) return error.RowTooShort;
                 }
 
                 // set the field if it's not void
@@ -322,7 +329,7 @@ pub fn parseLine(
                 if (try stream.next()) |item| {
                     if (item == .End) return r;
                 }
-                return error.ColumnTooLong;
+                return error.RowTooLong;
             }
         },
         else => |info| @compileError(@typeName(T) ++ " not supported, only structs"),
