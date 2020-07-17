@@ -328,28 +328,33 @@ pub fn parseLine(
         else => |info| @compileError(@typeName(T) ++ " not supported, only structs"),
     }
 }
-
 test "line parser" {
-    var p = TokenStream.init("1,ok,4.5,", .{});
-    const T = struct { i: usize, e: enum { ok }, f: f32, n: ?u1 };
-    const expected: T = .{ .i = 1, .e = .ok, .f = 4.5, .n = null };
-    std.testing.expectEqual(expected, try parseLine(T, &p, .{}));
+    {
+        var p = TokenStream.init("1,ok,4.5,", .{});
+        const T = struct { i: usize, e: enum { ok }, f: f32, n: ?u1 };
+        const expected: T = .{ .i = 1, .e = .ok, .f = 4.5, .n = null };
+        std.testing.expectEqual(expected, try parseLine(T, &p, .{}));
+    }
 
-    p = TokenStream.init("more,fields,which,can,be,ignored", .{});
-    const T0 = struct { text: []const u8 };
-    std.testing.expect(std.mem.eql(
-        u8,
-        "more",
-        (try parseLine(T0, &p, .{ .allow_superflous_fields = true })).text,
-    ));
+    {
+        var p = TokenStream.init("more,fields,which,can,be,ignored", .{});
+        const T = struct { text: []const u8 };
+        std.testing.expect(std.mem.eql(
+            u8,
+            "more",
+            (try parseLine(T, &p, .{ .allow_superflous_fields = true })).text,
+        ));
+    }
 
-    p = TokenStream.init("missing,ok", .{});
-    const T1 = struct { f: enum { missing }, s: enum { ok }, n: ?usize, v: void };
-    const expected1: T1 = .{ .f = .missing, .s = .ok, .n = null, .v = {} };
-    std.testing.expectEqual(
-        expected1,
-        try parseLine(T1, &p, .{ .allow_missing_fields = true }),
-    );
+    {
+        var p = TokenStream.init("missing,ok", .{});
+        const T = struct { f: enum { missing }, s: enum { ok }, n: ?usize, v: void };
+        const expected: T = .{ .f = .missing, .s = .ok, .n = null, .v = {} };
+        std.testing.expectEqual(
+            expected,
+            try parseLine(T, &p, .{ .allow_missing_fields = true }),
+        );
+    }
 }
 
 fn stringifyColumn(
