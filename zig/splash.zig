@@ -1,4 +1,5 @@
 const std = @import("std");
+const time = std.time;
 
 var line = [_]u8{ 0x1b, '[', '4', '8', ';', '5', ';', '0', '0', '0', 'm', ' ' } ** 80 ++
     [_]u8{ 0x1b, '[', '0', 'm', '\n' };
@@ -12,8 +13,8 @@ const Machine = struct {
 
     pub fn step(m: *Machine) u8 {
         const t = m.t;
-        m.t += 1;
-        const result = t * t >> 16;
+        m.t +%= 1;
+        const result = t *% t >> 16;
         return @truncate(u4, result);
     }
 };
@@ -23,7 +24,7 @@ pub fn main() !void {
     var lim: usize = 80;
     var m = Machine.init();
 
-    while (lim > 0) : (lim -= 1) {
+    while (true) {
         var offset: u32 = 7;
         var i: u32 = 64;
         while (i > 0) : ({
@@ -39,5 +40,6 @@ pub fn main() !void {
             );
         }
         try stdout.writeAll(line[0..]);
+        time.sleep(time.ns_per_s / 16);
     }
 }
