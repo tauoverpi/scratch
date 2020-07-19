@@ -1,7 +1,7 @@
 const std = @import("std");
 const time = std.time;
 
-var line = [_]u8{ 0x1b, '[', '4', '8', ';', '5', ';', '0', '0', '0', 'm', ' ' } ** 80 ++
+var line = [_]u8{ 0x1b, '[', '4', '8', ';', '5', ';', '0', '0', '0', 'm', ' ' } ** 64 ++
     [_]u8{ 0x1b, '[', '0', 'm', '\n' };
 
 const Machine = struct {
