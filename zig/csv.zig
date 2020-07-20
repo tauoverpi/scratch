@@ -282,8 +282,11 @@ pub fn parseLine(
                 var cr: T = undefined;
                 for (info.fields) |field, i| {
                     const ti = @typeInfo(field.field_type);
-                    if (ti == .Optional) @field(cr, field.name) = null;
-                    if (ti != .Void or ti != .Optional) lim = i;
+                    if (ti != .Void or ti != .Optional) {
+                        lim = i;
+                        if (ti == .Void) @field(cr, field.name) = {};
+                        if (ti == .Optional) @field(cr, field.name) = null;
+                    }
                 }
                 break :blk .{ .result = cr, .required = lim };
             };
@@ -335,6 +338,7 @@ pub fn parseLine(
         else => |info| @compileError(@typeName(T) ++ " not supported, only structs"),
     }
 }
+
 test "line parser" {
     {
         var p = TokenStream.init("1,ok,4.5,", .{});
@@ -425,6 +429,10 @@ pub fn stringifyLine(
 test "stringify" {
     const out = std.io.getStdOut().writer();
     const T = enum { ok };
-    try stringifyLine(.{ .f = 4.4, .i = 4, .e = T.ok, .s = @as([]const u8, "a thing"), .k = {} }, .{}, out);
+    try stringifyLine(
+        .{ .f = 4.4, .i = 4, .e = T.ok, .s = @as([]const u8, "a thing"), .k = {} },
+        .{},
+        out,
+    );
     try out.writeAll("\n");
 }
