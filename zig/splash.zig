@@ -45,21 +45,19 @@ const Machine = struct {
                         else => unreachable,
                     }
                 },
-                '~', 'd', 's' => switch (byte) {
+                '~', 'f' => switch (byte) {
                     '~' => stack[index - 1] = ~stack[index - 1],
-                    's' => stack[index - 1] = (stack[index - 1] << 16) | (stack[index - 1] >> 16),
-                    'd' => {
-                        index += 1;
-                        stack[index - 1] = ~stack[index - 2];
-                    },
+                    'f' => stack[index - 1] = (stack[index - 1] << 16) | (stack[index - 1] >> 16),
                     else => unreachable,
                 },
-                't', 'm', 'l', 'h' => {
+                't', 'm', 'l', 'h', 'd', 'o' => {
                     switch (byte) {
                         't' => stack[index] = t,
                         'm' => stack[index] = 0xffffffff,
                         'l' => stack[index] = 0x0000ffff,
                         'h' => stack[index] = 0xffff0000,
+                        'o' => stack[index] = stack[index - 2],
+                        'd' => stack[index] = stack[index - 1],
                         else => unreachable,
                     }
                     index += 1;
@@ -82,7 +80,7 @@ pub fn main() !void {
         try stdout.writeAll(
             \\usage: splash track
             \\  t8t>&                fractal
-            \\  AAA**t/AAA**1+/^t*   jumper
+            \\  AAA**t/AAA**1+t/^t*   jumper
             \\  Gt>1t++t^t/          cyclic
             \\  Gt>1+At>&t*          42 cycle
             \\
