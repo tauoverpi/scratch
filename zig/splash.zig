@@ -28,7 +28,7 @@ const Machine = struct {
         var index: usize = 0;
         for (m.src) |byte| {
             switch (byte) {
-                '%', '&', '^', '+', '*', '/', '>', '<', '-' => {
+                '|', '%', '&', '^', '+', '*', '/', '>', '<', '-' => {
                     const a = stack[index - 1];
                     const b = stack[index - 2];
                     index -= 1;
@@ -39,6 +39,7 @@ const Machine = struct {
                         '-' => stack[index - 1] = a -% b,
                         '*' => stack[index - 1] = a *% b,
                         '/' => stack[index - 1] = a / b,
+                        '|' => stack[index - 1] = a | b,
                         '%' => stack[index - 1] = a % b,
                         '>' => stack[index - 1] = a >> @truncate(u5, b),
                         '<' => stack[index - 1] = a << @truncate(u5, b),
@@ -137,7 +138,7 @@ pub fn main() !void {
             audio[size - i] = step;
         }
         try stdout.writeAll(line[0..]);
-        try stdout.print("\x1b[0m{} - {}\n", .{ m.t - 512, m.t });
+        try stdout.print("\x1b[0m{x} - {x}\n", .{ m.t - 512, m.t });
         try writer.writeAll(&audio);
         time.sleep(time.ns_per_s / 16);
     }
