@@ -84,6 +84,7 @@ pub fn main() !void {
             \\  t8t>&                fractal
             \\  AAA**t/AAA**1+/^t*   jumper
             \\  Gt>1t++t^t/          cyclic
+            \\  Gt>1+At>&t*          42 cycle
             \\
         );
         std.os.exit(0);
@@ -135,8 +136,8 @@ pub fn main() !void {
             audio[size - i] = step;
         }
         try stdout.writeAll(line[0..]);
-        try stdout.print("\x1b[0m{}\n", .{m.t});
-        time.sleep(time.ns_per_s / 16);
+        try stdout.print("\x1b[0m{} - {}\n", .{ m.t - 512, m.t });
         try writer.writeAll(&audio);
+        time.sleep(time.ns_per_s / 16);
     }
 }
