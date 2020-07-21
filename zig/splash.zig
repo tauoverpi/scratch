@@ -76,9 +76,9 @@ const Machine = struct {
 pub fn main() !void {
     const stdout = std.io.getStdOut().writer();
     var lim: usize = 80;
-    if (std.os.argv.len != 2) {
+    if (std.os.argv.len != 2 and std.os.argv.len != 3) {
         try stdout.writeAll(
-            \\usage: splash track
+            \\usage: splash track [offset]
             \\  t8t>&                fractal
             \\  AAA**t/AAA**1+t/^t*   jumper
             \\  Gt>1t++t^t/          cyclic
@@ -88,6 +88,9 @@ pub fn main() !void {
         std.os.exit(0);
     }
     var m = Machine.init(std.os.argv[1][0..std.mem.len(std.os.argv[1])]);
+    if (std.os.argv.len == 3) {
+        m.t = try std.fmt.parseInt(u32, std.os.argv[2][0..std.mem.len(std.os.argv[2])], 16);
+    }
 
     var child = try std.ChildProcess.init(&[_][]const u8{ "aplay", "-q", "-" }, std.heap.page_allocator);
     child.stdin_behavior = .Pipe;
