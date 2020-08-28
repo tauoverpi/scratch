@@ -8,28 +8,39 @@ fn Unit(comptime T: type) type {
 }
 
 fn Actor(comptime T: type) type {
-    const H = struct { typ: anytype };
-    var empty = .{};
-    comptime var names: []const []const u8 = &[_][]const u8{};
-    comptime var box = H{ .typ = empty };
+    const F = std.builtin.TypeInfo.StructField;
+    comptime var fields: []const F = &[_]F{};
 
     inline for (@typeInfo(T).Struct.decls) |decl| {
         switch (decl.data) {
             else => {},
             .Fn => |fun| {
                 const info = @typeInfo(fun.fn_type).Fn;
-                if (info.args.len != 3) continue;
+                if (!decl.is_pub or info.args.len != 3) continue;
                 if (info.args[0].arg_type.? != *T) continue;
                 if (info.args[1].arg_type.? != *Context(T)) continue;
-                const A = info.args[2].arg_type.?;
-                const B = struct { pending: usize, mail: std.TailQueue(A) };
-                names = names ++ [_][]const u8{decl.name};
-                box.typ = box.typ ++ Unit(B){ .@"0" = undefined };
+                fields = fields ++ [_]F{
+                    .{
+                        .name = decl.name,
+                        .default_value = null,
+                        .field_type = struct {
+                            pending: usize,
+                            mail: std.TailQueue(info.args[2].arg_type.?),
+                        },
+                    },
+                };
             },
         }
     }
 
-    const Mailbox = @TypeOf(box.typ);
+    const Mailbox = @Type(.{
+        .Struct = .{
+            .fields = fields,
+            .decls = &[_]std.builtin.TypeInfo.Declaration{},
+            .is_tuple = false,
+            .layout = .Auto,
+        },
+    });
 
     return struct {
         mailbox: Mailbox,
@@ -39,9 +50,9 @@ fn Actor(comptime T: type) type {
 
         pub fn init() Self {
             var r: Self = undefined;
-            inline for (names) |_, i| {
-                r.mailbox[i].pending = 0;
-                r.mailbox[i].mail = @TypeOf(r.mailbox[i].mail).init();
+            inline for (std.meta.fields(Mailbox)) |field, i| {
+                @field(r.mailbox, field.name).pending = 0;
+                @field(r.mailbox, field.name).mail = .{};
             }
             r.context = .{};
             return r;
@@ -50,7 +61,12 @@ fn Actor(comptime T: type) type {
 }
 
 fn Context(comptime T: type) type {
-    return struct {};
+    return struct {
+        const Ctx = @This();
+        pub fn send(ctx: Ctx, comptime method: []const u8, address: anytype, mail: anytype) void {
+            if (!@hasDecl(address.kind, method)) @compileError("handler does not exist");
+        }
+    };
 }
 
 fn Address(comptime T: type) type {

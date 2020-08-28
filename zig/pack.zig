@@ -20,19 +20,6 @@ pub fn unpack(ar: anytype) !void {
     }
 }
 
-const help =
-    \\usage: pkg [options]
-    \\
-    \\  -h/--help          display this message
-    \\  -p/--prefix        use the given prefix path
-    \\  -i/--install       install package
-    \\  -u/--uninstall     restore last version (must have installed prior)
-    \\  -l/--log [topic]   produce logs from the given topic
-    \\  -f/--force         proceed regardless of errors
-    \\  -o/--optimize      hardlink duplicates
-    \\  -g/--graph         produce a graph of the system
-;
-
 const LogOptions = struct {};
 
 const ArgParser = struct {
