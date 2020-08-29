@@ -35,7 +35,7 @@ const Notify = struct {
     pub fn notify() !void {
         const fd = try os.inotify_init1(os.linux.IN_CLOEXEC);
         defer os.close(fd);
-        var buffer: [1]u8 align(@alignOf(os.linux.inotify_event)) = undefined;
+        var buffer: [4096]u8 align(@alignOf(os.linux.inotify_event)) = undefined;
         const Watch = struct { wd: i32, arg: usize };
         var watch_buffer: [4096]Watch = undefined;
         var files: []const Watch = &[_]Watch{};
@@ -96,7 +96,7 @@ const Notify = struct {
                 if (name.len >= 1 and name[0] != '-') {
                     try stderr.print("watching {}\n", .{name});
                     const watch = try os.inotify_add_watchZ(fd, name, options);
-                    watch_buffer[number] = .{ .wd = watch, .arg = arg };
+                    watch_buffer[number] = .{ .wd = watch, .arg = arg + 2 };
                     number += 1;
                     watching = true;
                 }
@@ -112,9 +112,10 @@ const Notify = struct {
         }
 
         _ = os.linux.read(fd, &buffer, buffer.len);
+        const wd = std.mem.readIntSliceNative(i32, buffer[0..4]);
         if (files.len > 0) for (files) |file| {
-            if (file.wd == watch_buffer[0].wd) {
-                try stdout.print("{}\n", .{os.argv[file.arg + 2][0..std.mem.len(os.argv[file.arg + 2])]});
+            if (file.wd == wd) {
+                try stdout.print("{}\n", .{os.argv[file.arg][0..std.mem.len(os.argv[file.arg])]});
                 break;
             }
         };
