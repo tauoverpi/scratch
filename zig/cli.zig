@@ -42,7 +42,7 @@ const Notify = struct {
 
         var options: u32 = 0;
         if (std.mem.len(os.argv) > 2) {
-            for (os.argv[3..std.mem.len(os.argv)]) |flag| {
+            for (os.argv[2..std.mem.len(os.argv)]) |flag| {
                 const arg = flag[0..std.mem.len(flag)];
                 if (arg.len >= 2 and arg[0] == '-' and arg[1] != '-') {
                     for (arg[1..]) |c| {
@@ -110,6 +110,21 @@ const Notify = struct {
             options |= os.linux.IN_ALL_EVENTS;
             const watch = try os.inotify_add_watchZ(fd, ".", options);
         }
+        if (os.linux.IN_CLOSE_WRITE & options > 0) try stderr.writeAll("event IN_CLOSE_WRITE\n");
+        if (os.linux.IN_CLOSE_NOWRITE & options > 0) try stderr.writeAll("event IN_CLOSE_NOWRITE\n");
+        if (os.linux.IN_CREATE & options > 0) try stderr.writeAll("event IN_CREATE\n");
+        if (os.linux.IN_MODIFY & options > 0) try stderr.writeAll("event IN_MODIFY\n");
+        if (os.linux.IN_DELETE & options > 0) try stderr.writeAll("event IN_DELETE\n");
+        if (os.linux.IN_DELETE_SELF & options > 0) try stderr.writeAll("event IN_DELETE_SELF\n");
+        if (os.linux.IN_MOVE_SELF & options > 0) try stderr.writeAll("event IN_MOVE_SELF\n");
+        if (os.linux.IN_MOVED_FROM & options > 0) try stderr.writeAll("event IN_MOVED_FROM\n");
+        if (os.linux.IN_MOVED_TO & options > 0) try stderr.writeAll("event IN_MOVED_TO\n");
+        if (os.linux.IN_ACCESS & options > 0) try stderr.writeAll("event IN_ACCESS\n");
+        if (os.linux.IN_OPEN & options > 0) try stderr.writeAll("event IN_OPEN\n");
+        if (os.linux.IN_ATTRIB & options > 0) try stderr.writeAll("event IN_ATTRIB\n");
+        if (os.linux.IN_ALL_EVENTS & options > 0) try stderr.writeAll("event IN_ALL_EVENTS\n");
+        if (os.linux.IN_ONLYDIR & options > 0) try stderr.writeAll("event IN_ONLYDIR\n");
+        if (os.linux.IN_DONT_FOLLOW & options > 0) try stderr.writeAll("event IN_DONT_FOLLOW\n");
 
         _ = os.linux.read(fd, &buffer, buffer.len);
         const wd = std.mem.readIntSliceNative(i32, buffer[0..4]);
