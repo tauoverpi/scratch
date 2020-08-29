@@ -27,12 +27,11 @@ const SP = struct {
                 '\t' => p.count += 1,
 
                 '\n', '\r' => {
-                    const token = .{ .len = p.count };
                     if (c == '\r') {
                         p.state = .Crlf;
                     }
-                    p.count = 0;
-                    return token;
+                    defer p.count = 0;
+                    return .{ .len = p.count };
                 },
 
                 else => p.count += 1,

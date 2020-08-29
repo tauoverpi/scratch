@@ -19,9 +19,14 @@ fn AoS(comptime T: type, comptime size: usize) type {
 
 fn SoA(comptime T: type, comptime size: usize) type {
     comptime var fields: []const TypeInfo.StructField = &[_]TypeInfo.StructField{};
+
     inline for (std.meta.fields(T)) |field| {
+        const default = if (field.default_value) |value| {
+            break value ** size;
+        } else null;
+
         fields = fields ++ &[_]TypeInfo.StructField{.{
-            .default_value = null, // TODO: field.default_value,
+            .default_value = default,
             .name = field.name,
             .field_type = [size]field.field_type,
         }};
@@ -79,14 +84,14 @@ pub fn AoSSoA(comptime kind: Kind, comptime T: type, comptime size: usize) type 
     };
 }
 
-test "erasure-array-of-structures" {
+test "array-of-structures" {
     const T = AoSSoA(.AoS, struct { a: u32, b: u8 }, 12);
     var t: T = .{};
     t.put(.{ .a = 2, .b = 5 }, 2);
     std.debug.print("{}\n", .{t.get(2)});
 }
 
-test "erasure-structures-of-arrays" {
+test "structures-of-arrays" {
     const T = AoSSoA(.SoA, struct { a: u32, b: u8 }, 12);
     var t: T = .{};
     t.put(.{ .a = 2, .b = 5 }, 2);

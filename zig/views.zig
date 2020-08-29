@@ -33,7 +33,7 @@
 //| Conversion:
 //|
 //| - The view casts back into the type with `const t: Original = @fromView(view)` when
-//|   the underlying struct of the view matches the result type.
+//|   the underlying struct of the view matches the result type. (can be implicit)
 //|   `struct { f0: t0, ..., fN: tN | rest } ==> struct { f0: t0, ..., fN: tN, rest }`
 //| - When passed to a procedure taking a view of a subset of the struct a view
 //|   is passed `struct { f0: t0, ..., fN: tN } ==> struct { ... | _ }`
@@ -63,7 +63,7 @@ pub fn merge(comptime T: type, set: anytype, value: T) void {
     }
 }
 
-// return the common subset of fields both structs agree upon
+// return the common subset of fields both structs agree upon (not part of the proposal)
 pub fn Subset(comptime A: type, comptime B: type) type {
     comptime var fields: []const TypeInfo.StructField = &[_]TypeInfo.StructField{};
     inline for (std.meta.fields(A)) |field| {
@@ -89,9 +89,9 @@ pub fn Subset(comptime A: type, comptime B: type) type {
 }
 
 //| Motivation:
-
+//|
 //| Say you have a configuration for talking to Modbus meters or similar
-const SecondaryAddress = struct { id: u32, medium: u8, version: u8, manufacturer: u16 };
+const SecondaryAddress = struct { id: u32, medium: u8, version: u8, manufacturer: u15 };
 const ComType = enum { RS232, RS485 };
 const Parity = enum { even, odd };
 const Telegram = *@Type(.Opaque); // imagine an M-Bus meter telegram
@@ -105,6 +105,7 @@ const SerialDevice = struct {
     stopbit: u2 = 1,
     baud: usize,
     primary: u8,
+    slaveaddress: u16,
     secondary: SecondaryAddress,
     telegrams: []const Telegram,
 };
@@ -119,6 +120,7 @@ const NetDevice = struct {
     stopbit: u2 = 1,
     baud: usize,
     primary: u8,
+    slaveaddress: u16,
     secondary: SecondaryAddress,
     telegrams: []const Telegram,
 };
@@ -142,12 +144,14 @@ test "at runtime" {
             .com = .RS485,
             .baud = 2400,
             .primary = 0,
+            .slaveaddress = 0,
             .secondary = .{ .id = 0x12345678, .version = 0, .medium = 0, .manufacturer = 0x7f },
             .telegrams = &[_]Telegram{},
         },
     };
 
     //| you would currently have to duplicate code
+    //| const sub = ... TODO remove ptr
     var sub = switch (device) {
         .Net => |net| subset(EqualSubset, net),
         .Serial => |ser| subset(EqualSubset, ser),

@@ -60,14 +60,13 @@ const StreamingParser = struct {
                     .Data => .Family,
                     else => unreachable,
                 };
-                const count = p.tmp;
                 p.count = 1;
-                p.tmp = 0;
+                defer p.tmp = 0;
                 return switch (p.state) {
-                    .Address => Token{ .Address = count },
-                    .Display => Token{ .Display = count },
-                    .Name => Token{ .Name = count },
-                    .Data => Token{ .Data = count },
+                    .Address => Token{ .Address = p.tmp },
+                    .Display => Token{ .Display = p.tmp },
+                    .Name => Token{ .Name = p.tmp },
+                    .Data => Token{ .Data = p.tmp },
                     else => unreachable,
                 };
             } else {
