@@ -29,7 +29,7 @@ const Notify = struct {
             \\  -D --dont-follow
             \\
         );
-        std.os.exit(1);
+        return error.HelpText;
     }
 
     pub fn notify() !void {
@@ -44,6 +44,7 @@ const Notify = struct {
         if (std.mem.len(os.argv) > 2) {
             for (os.argv[2..std.mem.len(os.argv)]) |flag| {
                 const arg = flag[0..std.mem.len(flag)];
+                if (arg.len == 2 and arg[0] == '-' and arg[1] == '-') break;
                 if (arg.len >= 2 and arg[0] == '-' and arg[1] != '-') {
                     for (arg[1..]) |c| {
                         switch (c) {
@@ -91,9 +92,11 @@ const Notify = struct {
             if (options == 0) options |= os.linux.IN_ALL_EVENTS;
             var watching: bool = false;
             var number: usize = 0;
+            var escaped = false;
             for (os.argv[2..std.mem.len(os.argv)]) |file, arg| {
                 const name = file[0..std.mem.len(file) :0];
-                if (name.len >= 1 and name[0] != '-') {
+                if (name.len == 2 and name[0] == '-' and name[1] == '-') escaped = true;
+                if (name.len >= 1 and (name[0] != '-' or escaped)) {
                     try stderr.print("watching {}\n", .{name});
                     const watch = try os.inotify_add_watchZ(fd, name, options);
                     watch_buffer[number] = .{ .wd = watch, .arg = arg + 2 };
