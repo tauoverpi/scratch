@@ -122,7 +122,6 @@ const Notify = struct {
         if (os.linux.IN_ACCESS & options > 0) try stderr.writeAll("event IN_ACCESS\n");
         if (os.linux.IN_OPEN & options > 0) try stderr.writeAll("event IN_OPEN\n");
         if (os.linux.IN_ATTRIB & options > 0) try stderr.writeAll("event IN_ATTRIB\n");
-        if (os.linux.IN_ALL_EVENTS & options > 0) try stderr.writeAll("event IN_ALL_EVENTS\n");
         if (os.linux.IN_ONLYDIR & options > 0) try stderr.writeAll("event IN_ONLYDIR\n");
         if (os.linux.IN_DONT_FOLLOW & options > 0) try stderr.writeAll("event IN_DONT_FOLLOW\n");
 
