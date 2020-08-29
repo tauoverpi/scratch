@@ -3,28 +3,39 @@
 //| Allow restricted views of structs of the form `struct { baud: usize | _ }`
 //| where only the mentioned fields can be reached (`_` represents the rest of
 //| the struct that's not accessible) and only the subset in the view is passed
-//| to the callee.
-//|
-//| Should the callee return the same struct `fn(struct{x:u8|r}) struct{x:u8|r}`
+//| to the callee. Should the callee return the same struct `fn(struct{x:u8|r}) struct{x:u8|r}`
 //| the full struct with the fields given upon calling is placed in the result
 //| location and updated with the returned fields.
 //|
-//| Implicit casts:
+//| Storing the in data structures view retains the rest of the fields since
+//| the view is no different than the original struct in representation.
 //|
-//| - for the caller of the function taking a view of a struct the return is of
-//|   the same struct passed to the callee
-//|   `struct { f0: t0, ..., fN: tN | rest } == struct { f0: t0, ..., fN: tN, rest }`
-//| - for the callee the view is equivalent to any struct of the same shape as
-//|   the subset
-//|   `struct { f0: t0, ..., fN: tN | _} == struct { f0: t0, ..., fN: tN }`
+//| Example:
 //|
-//| comptime copy implementation:
+//| ```zig
+//| /// Adjusts baudrate until a response can be read from the configured meter
+//| pub fn searchBaud(cfg: *struct { baud: usize | _ }, timeout: usize) !void {
+//|     // some logic providing an adjusted baud
+//|     cfg.baud = adjusted;
+//| }
+//| ```
+//|
+//| Implicit:
+//|
+//| - The view casts back into the type with `@fromView(view_of_struct)` when
+//|   the underlying struct of the view matches the result type. (could be implicit)
+//|   `struct { f0: t0, ..., fN: tN | rest } ==> struct { f0: t0, ..., fN: tN, rest }`
+//| - When passing the struct to a function taking a subset the cast is implicit
+//|   `struct { f0: t0, ..., fN: tN | _} ==> struct { f0: t0, ..., fN: tN }`
+//| -
+//|
+//| Comptime implementation:
 
 const std = @import("std");
+const TypeInfo = std.builtin.TypeInfo;
 
+// split the fields we care about from the struct
 pub fn subset(comptime T: type, value: anytype) T {
-    // while this works it does incurr overhead for keeping type safety without
-    // extra magic
     var r: T = undefined;
 
     inline for (std.meta.fields(T)) |field| {
@@ -34,8 +45,8 @@ pub fn subset(comptime T: type, value: anytype) T {
     return r;
 }
 
+// merge them back at the end when we're done with it
 pub fn merge(comptime T: type, set: anytype, value: T) void {
-    // used for merging back into the original set
     var r = set;
 
     inline for (std.meta.fields(T)) |field| {
@@ -43,88 +54,77 @@ pub fn merge(comptime T: type, set: anytype, value: T) void {
     }
 }
 
-//| Related footgun it prevents (but doesn't solve):
-//|
-//| Currently `anytype` hides footguns in the form of any type which can use the
-//| `x.f` notation since it relies on the field having the right name and type
-//| rather than any kind of sanity check if it's even possible to reach the
-//| field.
-
-test "footgun" {
-    const Projectile = union(enum) { x: u32, y: u32 };
-
-    var foot: Projectile = .{ .x = 5 };
-
-    const shoot = (struct {
-        pub fn gun(x: anytype) void {
-            // this should be a compile error since it's impossible for a union
-            // to change here for this expression to be correct
-            _ = x.x + x.y;
+// return the common subset of fields both structs agree upon
+pub fn Subset(comptime A: type, comptime B: type) type {
+    comptime var fields: []const TypeInfo.StructField = &[_]TypeInfo.StructField{};
+    inline for (std.meta.fields(A)) |field| {
+        if (@hasField(B, field.name) and @TypeOf(@field(@as(B, undefined), field.name)) == field.field_type) {
+            fields = fields ++ &[_]TypeInfo.StructField{
+                .{
+                    .name = field.name,
+                    .default_value = null,
+                    .field_type = field.field_type,
+                },
+            };
         }
-    }).gun;
+    }
 
-    shoot(foot);
+    return @Type(TypeInfo{
+        .Struct = .{
+            .is_tuple = false,
+            .fields = fields,
+            .decls = &[_]TypeInfo.Declaration{},
+            .layout = .Auto,
+        },
+    });
 }
 
-//| The proposal on constraining to a subset of fields in structs (or just
-//| constraining to be a struct) would allow for avoiding this in cases where
-//| analysis can't catch it.
-//|
 //| Motivation:
 
-test "subset-equivalence" {
+//| Say you have a configuration for talking to Modbus meters or similar
+const SecondaryAddress = struct { id: u32, medium: u8, version: u8, manufacturer: u16 };
+const ComType = enum { RS232, RS485 };
+const Parity = enum { even, odd };
+const Telegram = *@Type(.Opaque); // imagine an M-Bus meter telegram
 
-    //| Say you have a configuration for talking to Modbus meters or similar
-    const SecondaryAddress = struct { id: u32, medium: u8, version: u8, manufacturer: u16 };
-    const ComType = enum { RS232, RS485 };
-    const Parity = enum { even, odd };
-    const Telegram = *@Type(.Opaque); // imagine an M-Bus meter telegram
+//| Communication is usually serial thus give the following
+const SerialDevice = struct {
+    comport: usize,
+    com: ComType,
+    bits: u4 = 8,
+    parity: Parity = .even,
+    stopbit: u2 = 1,
+    baud: usize,
+    primary: u8,
+    secondary: SecondaryAddress,
+    telegrams: []const Telegram,
+};
 
-    //| Communication is usually serial thus give the following
-    const SerialDevice = struct {
-        comport: usize,
-        com: ComType,
-        bits: u4 = 8,
-        parity: Parity = .even,
-        stopbit: u2 = 1,
-        baud: usize,
-        primary: u8,
-        secondary: SecondaryAddress,
-        telegrams: []const Telegram,
-    };
+//| However it can be over a network where each meter may differ in
+//| configuration of the serial parameters
+const NetDevice = struct {
+    address: struct { ip: []const u8, port: u16 },
+    com: ComType,
+    bits: u4 = 8,
+    parity: Parity = .even,
+    stopbit: u2 = 1,
+    baud: usize,
+    primary: u8,
+    secondary: SecondaryAddress,
+    telegrams: []const Telegram,
+};
 
-    //| However it can be over a network where each meter differs in
-    //| configuration of at least one of the serial parameters
-    const NetDevice = struct {
-        address: struct { ip: []const u8, port: u16 },
-        com: ComType,
-        bits: u4 = 8,
-        parity: Parity = .even,
-        stopbit: u2 = 1,
-        baud: usize,
-        primary: u8,
-        secondary: SecondaryAddress,
-        telegrams: []const Telegram,
-    };
+//| Both structures overlap as they're the exact same structure apart from
+//| the first field thus we could construct a view of the overlap
+const EqualSubset = Subset(NetDevice, SerialDevice);
 
-    //| Both structures overlap as they're the exact same structure apart from
-    //| the first field
-    const EqualSubset = struct {
-        com: ComType,
-        bits: u4,
-        parity: Parity,
-        stopbit: u2,
-        baud: usize,
-        primary: u8,
-        secondary: SecondaryAddress,
-        telegrams: []const Telegram,
-    };
+//| and in the case where one must perform some operation over one of them
+const Device = union(enum) {
+    Serial: SerialDevice,
+    Net: NetDevice,
+};
 
-    //| and in the case where one must select between them
-    const Device = union(enum) {
-        Serial: SerialDevice,
-        Net: NetDevice,
-    };
+test "at runtime" {
 
     //| where only one is active
     var device = Device{
@@ -138,44 +138,49 @@ test "subset-equivalence" {
         },
     };
 
-    //| you would currently have to duplicate code, make a copy of the subset, or use anytype
+    //| you would currently have to duplicate code
     var sub = switch (device) {
         .Net => |net| subset(EqualSubset, net),
         .Serial => |ser| subset(EqualSubset, ser),
     };
 
-    //| this works with anytype but now the type signature doesn't say anything about
-    //| the type it works on and the only other option I'm aware of is a new
-    //| type + copy to constrain it to the subset. However, with the proposal it
-    //| would explicitly specify what it takes as follows:
-    //|
-    //| struct {
-    //|    com: ComType,
-    //|    bits: u4,
-    //|    parity: Parity,
-    //|    stopbit: u2,
-    //|    baud: usize,
-    //|    primary: u8,
-    //|    secondary: SecondaryAddress,
-    //|    telegrams: []const Telegram,
-    //|    | _
-    //| }
-    //|
-    //| Which only cares that the fields and type exists (like anytype use) but
-    //| explicit in the type signature.
-    const modifySomehow = (struct {
-        pub fn modifySomehow(set: *EqualSubset) void {
-            set.baud = 9600;
-        }
-    }).modifySomehow;
-
+    //| and use a function which is either of type `anytype` and have comptime code
+    //| to typecheck it with no resriction on what you access or a manually
+    //| specialized procedure for each case
     modifySomehow(&sub);
 
-    //| which results in an awkward inteface
+    //| where with this proposal you could return a pointer restricted by the
+    //| view of the original struct and modify it directly to remove the need to
+    //| merge the subset back manually. This makes it purely a type-level restriction
+    //| and doesn't bleed into runtime.
     switch (device) {
         .Net => |*net| merge(EqualSubset, net, sub),
         .Serial => |*ser| merge(EqualSubset, ser, sub),
     }
 
     std.debug.print("{}\n", .{device});
+}
+
+//| if views were supported one could instead provide a direct pointer to the
+//| struct with a restricted view declaring exactly what may be modified/read
+//| without constraining to one particular instance of a shape.
+//|
+//| const EqualSubset = struct {
+//|    com: ComType,
+//|    bits: u4,
+//|    parity: Parity,
+//|    stopbit: u2,
+//|    baud: usize,
+//|    primary: u8,
+//|    secondary: SecondaryAddress,
+//|    telegrams: []const Telegram,
+//|    | _
+//| }
+//|
+//| thus the following would be generic over all structs the same size or larger
+//| which contain the specified fields while being less powerful than `anytype`.
+pub fn modifySomehow(set: *EqualSubset) void {
+    set.baud = if (set.com == .RS232) 2400 else 9600;
+    set.stopbit = 1;
+    // and so on...
 }
