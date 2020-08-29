@@ -20,14 +20,23 @@
 //| }
 //| ```
 //|
-//| Implicit:
+//| ```zig
+//| /// When passing back the same view the `_` is replaced by a name
+//| /// representing information needed to reconstruct the struct from
+//| /// the view. Omitting this returns an anonymous struct (as it's today)
+//| /// rather than a view of the same as the input.
+//| pub fn function(x: struct { k: u32 | r }) struct { k: u32 | r } {
+//|     return x;
+//| }
+//| ```
 //|
-//| - The view casts back into the type with `@fromView(view_of_struct)` when
-//|   the underlying struct of the view matches the result type. (could be implicit)
+//| Conversion:
+//|
+//| - The view casts back into the type with `const t: Original = @fromView(view)` when
+//|   the underlying struct of the view matches the result type.
 //|   `struct { f0: t0, ..., fN: tN | rest } ==> struct { f0: t0, ..., fN: tN, rest }`
-//| - When passing the struct to a function taking a subset the cast is implicit
-//|   `struct { f0: t0, ..., fN: tN | _} ==> struct { f0: t0, ..., fN: tN }`
-//| -
+//| - When passed to a procedure taking a view of a subset of the struct a view
+//|   is passed `struct { f0: t0, ..., fN: tN } ==> struct { ... | _ }`
 //|
 //| Comptime implementation:
 
@@ -145,7 +154,7 @@ test "at runtime" {
     };
 
     //| and use a function which is either of type `anytype` and have comptime code
-    //| to typecheck it with no resriction on what you access or a manually
+    //| to typecheck it with no restriction on what you access or a manually
     //| specialized procedure for each case
     modifySomehow(&sub);
 
