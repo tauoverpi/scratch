@@ -69,6 +69,19 @@ test "tokenize-csv" {
 fn inferType(comptime text: []const u8) type {
     const Guess = enum { String, Number, OptString, OptNumber, OptUnknown };
     var it = TokenParser{ .text = text };
+    comptime var column_names: []const []const u8 = &[_][]const u8{};
+    if (text[0] == '#') {
+        it.index = 1;
+        inline while (it.next()) |cell| {
+            switch (cell) {
+                .Cell => |name| {
+                    column_names = column_names ++ &[_][]const u8{name};
+                },
+                .Nil => @compileError("column names must not be empty"),
+                .End => break,
+            }
+        }
+    }
     comptime var first_row: []const Guess = &[_]Guess{};
     inline while (it.next()) |cell| {
         switch (cell) {
@@ -119,6 +132,13 @@ fn inferType(comptime text: []const u8) type {
     comptime var fields: []const TypeInfo.StructField = &[_]TypeInfo.StructField{};
     inline for (row) |cell, n| {
         var buffer: [100]u8 = undefined;
+        const number = switch (column_names.len > 0) {
+            false => std.fmt.bufPrint(&buffer, "{}", .{n}) catch @compileError("buffer too small"),
+            true => for (column_names[n]) |c, j| {
+                buffer[j] = c;
+            } else buffer[0..j],
+        };
+        //const name = column_names[0];
         fields = fields ++ &[_]TypeInfo.StructField{.{
             .field_type = switch (cell) {
                 .String => []const u8,
@@ -127,14 +147,13 @@ fn inferType(comptime text: []const u8) type {
                 .OptNumber => ?f64,
                 else => @compileError("unknown type"),
             },
-            .name = std.fmt.bufPrint(&buffer, "{}", .{n}) catch
-                @compileError("buffer too small"),
+            .name = number,
             .default_value = null,
         }};
     }
     return @Type(TypeInfo{
         .Struct = .{
-            .is_tuple = true,
+            .is_tuple = column_names.len == 0,
             .fields = fields,
             .decls = &[_]TypeInfo.Declaration{},
             .layout = .Auto,
@@ -143,10 +162,12 @@ fn inferType(comptime text: []const u8) type {
 }
 
 test "infer-csv-type" {
+    @setEvalBranchQuota(1500);
     const T = inferType(
+        \\#name,number,optname,optnumber
         \\string,123445,,
         \\string,123456,optional string,54
     );
 
-    var t: T = T{ .@"0" = "iejfiej", .@"1" = 123, .@"2" = null, .@"3" = null };
+    var t: T = T{ .name = "iejfiej", .number = 123, .optname = null, .optnumber = null };
 }
