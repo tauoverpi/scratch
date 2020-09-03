@@ -27,6 +27,7 @@ const Notify = struct {
             \\  -e --all-events
             \\  -O --onlydir
             \\  -D --dont-follow
+            \\  -q --quiet
             \\
         );
         return error.HelpText;
@@ -39,6 +40,7 @@ const Notify = struct {
         const Watch = struct { wd: i32, arg: usize };
         var watch_buffer: [4096]Watch = undefined;
         var files: []const Watch = &[_]Watch{};
+        var quiet = false;
 
         var options: u32 = 0;
         if (std.mem.len(os.argv) > 2) {
@@ -63,6 +65,7 @@ const Notify = struct {
                             'e' => options |= os.linux.IN_ALL_EVENTS,
                             'O' => options |= os.linux.IN_ONLYDIR,
                             'D' => options |= os.linux.IN_DONT_FOLLOW,
+                            'q' => quiet = true,
                             else => try help(),
                         }
                     }
@@ -84,6 +87,7 @@ const Notify = struct {
                             hash("--all-events") => options |= os.linux.IN_ALL_EVENTS,
                             hash("--onlydir") => options |= os.linux.IN_ONLYDIR,
                             hash("--dont-follow") => options |= os.linux.IN_DONT_FOLLOW,
+                            hash("--quiet") => quiet = true,
                             else => try help(),
                         }
                     }
@@ -100,7 +104,7 @@ const Notify = struct {
                     continue;
                 }
                 if (name.len >= 1 and (name[0] != '-' or escaped)) {
-                    try stderr.print("watching {}\n", .{name});
+                    if (!quiet) try stderr.print("watching {}\n", .{name});
                     const watch = try os.inotify_add_watchZ(fd, name, options);
                     watch_buffer[number] = .{ .wd = watch, .arg = arg + 2 };
                     number += 1;
@@ -108,7 +112,7 @@ const Notify = struct {
                 }
             } else files = watch_buffer[0..number];
             if (!watching) {
-                try stderr.writeAll("watching current directory\n");
+                if (!quiet) try stderr.writeAll("watching current directory\n");
                 const watch = try os.inotify_add_watchZ(fd, ".", options);
             }
         } else {
@@ -116,20 +120,22 @@ const Notify = struct {
             options |= os.linux.IN_ALL_EVENTS;
             const watch = try os.inotify_add_watchZ(fd, ".", options);
         }
-        if (os.linux.IN_CLOSE_WRITE & options > 0) try stderr.writeAll("event IN_CLOSE_WRITE\n");
-        if (os.linux.IN_CLOSE_NOWRITE & options > 0) try stderr.writeAll("event IN_CLOSE_NOWRITE\n");
-        if (os.linux.IN_CREATE & options > 0) try stderr.writeAll("event IN_CREATE\n");
-        if (os.linux.IN_MODIFY & options > 0) try stderr.writeAll("event IN_MODIFY\n");
-        if (os.linux.IN_DELETE & options > 0) try stderr.writeAll("event IN_DELETE\n");
-        if (os.linux.IN_DELETE_SELF & options > 0) try stderr.writeAll("event IN_DELETE_SELF\n");
-        if (os.linux.IN_MOVE_SELF & options > 0) try stderr.writeAll("event IN_MOVE_SELF\n");
-        if (os.linux.IN_MOVED_FROM & options > 0) try stderr.writeAll("event IN_MOVED_FROM\n");
-        if (os.linux.IN_MOVED_TO & options > 0) try stderr.writeAll("event IN_MOVED_TO\n");
-        if (os.linux.IN_ACCESS & options > 0) try stderr.writeAll("event IN_ACCESS\n");
-        if (os.linux.IN_OPEN & options > 0) try stderr.writeAll("event IN_OPEN\n");
-        if (os.linux.IN_ATTRIB & options > 0) try stderr.writeAll("event IN_ATTRIB\n");
-        if (os.linux.IN_ONLYDIR & options > 0) try stderr.writeAll("event IN_ONLYDIR\n");
-        if (os.linux.IN_DONT_FOLLOW & options > 0) try stderr.writeAll("event IN_DONT_FOLLOW\n");
+        if (!quiet) {
+            if (os.linux.IN_CLOSE_WRITE & options > 0) try stderr.writeAll("event IN_CLOSE_WRITE\n");
+            if (os.linux.IN_CLOSE_NOWRITE & options > 0) try stderr.writeAll("event IN_CLOSE_NOWRITE\n");
+            if (os.linux.IN_CREATE & options > 0) try stderr.writeAll("event IN_CREATE\n");
+            if (os.linux.IN_MODIFY & options > 0) try stderr.writeAll("event IN_MODIFY\n");
+            if (os.linux.IN_DELETE & options > 0) try stderr.writeAll("event IN_DELETE\n");
+            if (os.linux.IN_DELETE_SELF & options > 0) try stderr.writeAll("event IN_DELETE_SELF\n");
+            if (os.linux.IN_MOVE_SELF & options > 0) try stderr.writeAll("event IN_MOVE_SELF\n");
+            if (os.linux.IN_MOVED_FROM & options > 0) try stderr.writeAll("event IN_MOVED_FROM\n");
+            if (os.linux.IN_MOVED_TO & options > 0) try stderr.writeAll("event IN_MOVED_TO\n");
+            if (os.linux.IN_ACCESS & options > 0) try stderr.writeAll("event IN_ACCESS\n");
+            if (os.linux.IN_OPEN & options > 0) try stderr.writeAll("event IN_OPEN\n");
+            if (os.linux.IN_ATTRIB & options > 0) try stderr.writeAll("event IN_ATTRIB\n");
+            if (os.linux.IN_ONLYDIR & options > 0) try stderr.writeAll("event IN_ONLYDIR\n");
+            if (os.linux.IN_DONT_FOLLOW & options > 0) try stderr.writeAll("event IN_DONT_FOLLOW\n");
+        }
 
         _ = os.linux.read(fd, &buffer, buffer.len);
         const wd = std.mem.readIntSliceNative(i32, buffer[0..4]);
