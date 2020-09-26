@@ -9,34 +9,26 @@ const P = struct {
     line: usize = 0,
     column: usize = 0,
 
-    pub fn peek(p: P) ?u8 {
-        return if (p.index < p.text.len) p.text[p.index] else null;
-    }
-
-    pub fn peekUtf8(p: P) !?u21 {
+    pub fn peek(p: P) !?u21 {
         if (p.index < p.text.len) {
-            const len = try std.unicode.utf8ByteSequenceLength(p.text[p.index]);
-            if (p.index + len < p.text.len) {
+            const byte = p.text[p.index];
+            if (byte > 0x1f) {
+                const len = try std.unicode.utf8ByteSequenceLength(byte);
                 return try std.unicode.utf8Decode(p.text[p.index .. p.index + len]);
-            }
-        }
-        return null;
+            } else return byte;
+        } else return null;
     }
 
-    pub fn consume(p: *P) !u8 {
-        if (p.index < p.text.len) return p.consumeNoEof();
-        return error.UnexpectedEof;
-    }
-
-    pub fn consumeUtf8(p: *P) !u21 {
-        if (p.index < p.text.len) {
-            const len = try std.unicode.utf8ByteSequenceLength(p.text[p.index]);
-            if (p.index + len < p.text.len) {
+    pub fn consume(p: *P) !u21 {
+        if (try p.peek()) |byte| {
+            if (byte > 0x1f) {
+                const len = try std.unicode.utf8CodepointSequenceLength(byte);
                 defer {
                     for (p.text[p.index .. p.index + len]) |_| _ = p.consumeNoEof();
                 }
                 return try std.unicode.utf8Decode(p.text[p.index .. p.index + len]);
             }
+            return p.consumeNoEof();
         }
         return error.UnexpectedEof;
     }
@@ -57,7 +49,7 @@ const P = struct {
     }
 
     pub fn expect(p: *P, expected: u8) !void {
-        if (p.peek()) |char| {
+        if (try p.peek()) |char| {
             if (char != expected) return error.UnexpectedCharacter;
             _ = p.consumeNoEof();
         } else return error.UnexpectedEof;
@@ -108,7 +100,7 @@ fn multilineString(p: *P) ![]const u8 {
     try p.exact("\"\"\"");
     const start = p.index;
 
-    while (p.peek()) |char| {
+    while (try p.peek()) |char| {
         if (char == '"') {
             const end = p.index;
 
@@ -132,27 +124,27 @@ test "string-multiline" {
         .text =
         \\"""this is a string
         \\that spans multiple
-        \\lines"""
+        \\lines and I loſt the game therefore you will aſ well"""
     };
 
     const result = try multilineString(&p);
     testing.expectEqualStrings(
         \\this is a string
         \\that spans multiple
-        \\lines
+        \\lines and I loſt the game therefore you will aſ well
     , result);
 }
 
 fn literalString(p: *P) ![]const u8 {
     try p.expect('`');
     const start = p.index;
-    while (try p.peekUtf8()) |char| {
+    while (try p.peek()) |char| {
         if (char == '`') {
             const result = p.text[start..p.index];
             try p.expect('`');
 
             return result;
-        } else _ = try p.consumeUtf8();
+        } else _ = try p.consume();
     }
     return error.UnexpectedEof;
 }
@@ -173,7 +165,7 @@ fn multilineLiteralString(p: *P) ![]const u8 {
     try p.exact("'''");
     const start = p.index;
 
-    while (p.peek()) |char| {
+    while (try p.peek()) |char| {
         if (char == '\'') {
             const end = p.index;
 
