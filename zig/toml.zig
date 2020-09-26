@@ -1,13 +1,24 @@
 const std = @import("std");
 const testing = std.testing;
+const Allocator = std.mem.Allocator;
+
+//! Backtracking TOML parser library with type specialization and error logging.
 
 const log = std.log.scoped(.@"toml parser");
+
+const ParserOptions = struct {
+    allocator: ?*Allocator = null,
+    iterations: usize = max,
+
+    const max = std.math.maxInt(usize);
+};
 
 const P = struct {
     text: []const u8,
     index: usize = 0,
     line: usize = 0,
     column: usize = 0,
+    options: ParserOptions = .{},
 
     pub fn peek(p: P) !?u21 {
         if (p.index < p.text.len) {
@@ -48,7 +59,7 @@ const P = struct {
         return c;
     }
 
-    pub fn expect(p: *P, expected: u8) !void {
+    pub fn expect(p: *P, expected: u21) !void {
         if (try p.peek()) |char| {
             if (char != expected) return error.UnexpectedCharacter;
             _ = p.consumeNoEof();
@@ -67,9 +78,20 @@ const P = struct {
         return true;
     }
 
-    pub fn eat(p: *P, expected: u8) bool {
+    pub fn eat(p: *P, expected: u21) bool {
         p.expect(expected) catch return false;
         return true;
+    }
+
+    pub fn oneOf(p: *P, expected: []const u21) !u21 {
+        for (expected) |codepoint| {
+            p.expect(codepoint) catch |e| switch (e) {
+                error.UnexpectedCharacter => continue,
+                else => return e,
+            };
+            return codepoint;
+        }
+        return error.UnexpectedCharacter;
     }
 };
 
@@ -83,38 +105,83 @@ test "comments" {
     try comment(&p);
 }
 
-fn string(p: *P) ![]const u8 {
+// String handling
+
+const String = struct {
+    text: []const u8,
+    len: usize,
+    escape: bool,
+};
+
+fn string(p: *P) !String {
+    var escape = false;
+    var escaped = false;
+    var len: usize = 0;
+    var limit: usize = p.options.iterations;
+
     try p.expect('"');
+    const start = p.index;
+
+    while (try p.peek()) |char| {
+        if (limit == 0) return error.IterationLimitReached;
+        limit -= 1;
+
+        if (char == '"' and !escape) {
+            const result = p.text[start..p.index];
+            try p.expect('"');
+            return String{ .text = result, .len = len, .escape = escaped };
+        } else if (char == '\\' and !escape) {
+            escape = true;
+            escaped = true;
+        } else escape = false;
+
+        len += try std.unicode.utf8CodepointSequenceLength(try p.consume());
+    }
+    return error.UnexpectedEof;
 }
 
 test "string-plain" {
-    if (true) return error.SkipZigTest;
     var p = P{
         .text =
         \\"this is a string"
     };
     const result = try string(&p);
+    testing.expect(result.len == result.text.len);
+    testing.expectEqualStrings("this is a string", result.text);
 }
 
-fn multilineString(p: *P) ![]const u8 {
+fn multilineString(p: *P) !String {
+    var escape = false;
+    var escaped = false;
+    var len: usize = 0;
+    var limit: usize = p.options.iterations;
+
     try p.exact("\"\"\"");
     const start = p.index;
 
     while (try p.peek()) |char| {
+        if (limit == 0) return error.IterationLimitReached;
+        limit -= 1;
+
         if (char == '"') {
             const end = p.index;
 
             if (p.exact("\"\"\"")) {
                 const result = p.text[start..end];
-                if (!std.unicode.utf8ValidateSlice(result))
-                    return error.InvalidUnicode;
 
-                return result;
+                return String{ .text = result, .escape = escaped, .len = len };
             } else |e| switch (e) {
                 error.UnexpectedCharacter => {},
                 else => return e,
             }
-        } else _ = try p.consume();
+        } else if (char == '\\' and !escape) {
+            escape = true;
+            escaped = true;
+            _ = try p.oneOf(&[_]u21{ 'n', 't', 'r', '\"', '\n', '\\' });
+        } else {
+            escape = false;
+            len += try std.unicode.utf8CodepointSequenceLength(try p.consume());
+        }
     }
     return error.UnexpectedEof;
 }
@@ -123,60 +190,72 @@ test "string-multiline" {
     var p = P{
         .text =
         \\"""this is a string
-        \\that spans multiple
+        \\that spans multiple\n
         \\lines and I loſt the game therefore you will aſ well"""
     };
 
     const result = try multilineString(&p);
+    testing.expect(result.len != result.text.len);
     testing.expectEqualStrings(
         \\this is a string
-        \\that spans multiple
+        \\that spans multiple\n
         \\lines and I loſt the game therefore you will aſ well
-    , result);
+    , result.text);
 }
 
-fn literalString(p: *P) ![]const u8 {
+fn literalString(p: *P) !String {
+    var limit: usize = p.options.iterations;
+
     try p.expect('`');
     const start = p.index;
     while (try p.peek()) |char| {
+        if (limit == 0) return error.IterationLimitReached;
+        limit -= 1;
+
         if (char == '`') {
             const result = p.text[start..p.index];
             try p.expect('`');
 
-            return result;
-        } else _ = try p.consume();
+            return String{ .text = result, .len = result.len, .escape = false };
+        } else {
+            _ = try p.consume();
+        }
     }
     return error.UnexpectedEof;
 }
 
 test "string-literal" {
     var p = P{
+        .options = .{ .iterations = 100 },
         .text =
         \\`this is a literal "with" """quotes""" and no escapes//\\`
     };
 
     const result = try literalString(&p);
+    testing.expect(result.len == result.text.len);
     testing.expectEqualStrings(
         \\this is a literal "with" """quotes""" and no escapes//\\
-    , result);
+    , result.text);
 }
 
-fn multilineLiteralString(p: *P) ![]const u8 {
+fn multilineLiteralString(p: *P) !String {
+    var limit: usize = p.options.iterations;
+
     try p.exact("'''");
     const start = p.index;
 
     while (try p.peek()) |char| {
+        if (limit == 0) return error.IterationLimitReached;
+        limit -= 1;
+
         if (char == '\'') {
             const end = p.index;
 
             if (p.exact("'''")) {
                 const result = p.text[start..end];
-                if (!std.unicode.utf8ValidateSlice(result))
-                    return error.InvalidUnicode;
-
-                return result;
+                return String{ .text = result, .len = result.len, .escape = false };
             } else |e| switch (e) {
-                error.UnexpectedCharacter => {},
+                error.UnexpectedCharacter => _ = try p.consume(),
                 else => return e,
             }
         } else _ = try p.consume();
@@ -184,16 +263,17 @@ fn multilineLiteralString(p: *P) ![]const u8 {
     return error.UnexpectedEof;
 }
 
-test "string-literal" {
+test "string-multiline-literal" {
     var p = P{
         .text =
         \\'''this is a literal multi-line
-        \\"with" """quotes""" and no escapes//\\'''
+        \\"with" """quotes""" and no'' ' escapes//\\'''
     };
 
     const result = try multilineLiteralString(&p);
+    testing.expect(result.len == result.text.len);
     testing.expectEqualStrings(
         \\this is a literal multi-line
-        \\"with" """quotes""" and no escapes//\\
-    , result);
+        \\"with" """quotes""" and no'' ' escapes//\\
+    , result.text);
 }
