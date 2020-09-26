@@ -151,8 +151,10 @@ test "string-plain" {
 }
 
 fn multilineString(p: *P) !String {
+    // TODO: improve this implementation to not do as much redundant work
     var escape = false;
     var escaped = false;
+    var skip = false;
     var len: usize = 0;
     var limit: usize = p.options.iterations;
 
@@ -177,9 +179,12 @@ fn multilineString(p: *P) !String {
         } else if (char == '\\' and !escape) {
             escape = true;
             escaped = true;
-            _ = try p.oneOf(&[_]u21{ 'n', 't', 'r', '\"', '\n', '\\' });
+            if ((try p.oneOf(&[_]u21{ '\n', 'n', 't', 'r', '\"', '\\' })) == '\n') skip = true;
+        } else if (skip and char == ' ') {
+            try p.expect(' ');
         } else {
             escape = false;
+            skip = false;
             len += try std.unicode.utf8CodepointSequenceLength(try p.consume());
         }
     }
@@ -189,16 +194,17 @@ fn multilineString(p: *P) !String {
 test "string-multiline" {
     var p = P{
         .text =
-        \\"""this is a string
-        \\that spans multiple\n
+        \\"""this is a string\
+        \\  that spans multiple\n
         \\lines and I loſt the game therefore you will aſ well"""
     };
 
     const result = try multilineString(&p);
     testing.expect(result.len != result.text.len);
+    testing.expect(result.len + 2 == result.text.len);
     testing.expectEqualStrings(
-        \\this is a string
-        \\that spans multiple\n
+        \\this is a string\
+        \\  that spans multiple\n
         \\lines and I loſt the game therefore you will aſ well
     , result.text);
 }
