@@ -23,8 +23,8 @@ const P = struct {
     pub fn peek(p: P) !?u21 {
         if (p.index < p.text.len) {
             const byte = p.text[p.index];
-            if (byte > 0x1f) {
-                const len = try std.unicode.utf8ByteSequenceLength(byte);
+            const len = try std.unicode.utf8ByteSequenceLength(byte);
+            if (len > 1) {
                 return try std.unicode.utf8Decode(p.text[p.index .. p.index + len]);
             } else return byte;
         } else return null;
@@ -32,8 +32,8 @@ const P = struct {
 
     pub fn consume(p: *P) !u21 {
         if (try p.peek()) |byte| {
-            if (byte > 0x1f) {
-                const len = try std.unicode.utf8CodepointSequenceLength(byte);
+            const len = try std.unicode.utf8CodepointSequenceLength(byte);
+            if (len > 1) {
                 defer {
                     for (p.text[p.index .. p.index + len]) |_| _ = p.consumeNoEof();
                 }
@@ -82,17 +82,6 @@ const P = struct {
         p.expect(expected) catch return false;
         return true;
     }
-
-    pub fn oneOf(p: *P, expected: []const u21) !u21 {
-        for (expected) |codepoint| {
-            p.expect(codepoint) catch |e| switch (e) {
-                error.UnexpectedCharacter => continue,
-                else => return e,
-            };
-            return codepoint;
-        }
-        return error.UnexpectedCharacter;
-    }
 };
 
 fn comment(p: *P) !void {
@@ -107,15 +96,70 @@ test "comments" {
 
 // String handling
 
-const String = struct {
+pub const String = struct {
     text: []const u8,
     len: usize,
     escape: bool,
+
+    const State = enum { Skip, Copy, Escape };
+
+    /// Unescape a string given by the string and multiline string parser
+    pub fn unescape(str: String, output: []u8) void {
+        std.debug.assert(output.len >= str.len);
+        var byte: usize = 0;
+        var state: State = .Copy;
+        var index: usize = 0;
+        var limit: u32 = 200;
+        while (limit > 0 and index < str.text.len) : (limit -= 1) {
+            const c = str.text[index];
+            const size = std.unicode.utf8ByteSequenceLength(c) catch unreachable;
+            switch (state) {
+                .Copy => switch (c) {
+                    '\\' => {
+                        state = .Escape;
+                        index += 1;
+                    },
+                    else => for (str.text[index .. index + size]) |part| {
+                        output[byte] = part;
+                        index += 1;
+                        byte += 1;
+                    },
+                },
+                .Skip => switch (c) {
+                    ' ', '\n' => index += 1,
+                    else => for (str.text[index .. index + size]) |part| {
+                        output[byte] = part;
+                        index += 1;
+                        byte += 1;
+                    } else {
+                        state = .Copy;
+                    },
+                },
+                .Escape => {
+                    switch (c) {
+                        '\\' => output[byte] = '\\',
+                        '"' => output[byte] = '"',
+                        'n' => output[byte] = '\n',
+                        't' => output[byte] = '\t',
+                        'r' => output[byte] = '\r',
+                        '\n' => {
+                            index += 1;
+                            state = .Skip;
+                            continue;
+                        },
+                        else => unreachable,
+                    }
+                    byte += 1;
+                    index += 1;
+                    state = .Copy;
+                },
+            }
+        }
+    }
 };
 
 fn string(p: *P) !String {
     var escape = false;
-    var escaped = false;
     var len: usize = 0;
     var limit: usize = p.options.iterations;
 
@@ -126,16 +170,17 @@ fn string(p: *P) !String {
         if (limit == 0) return error.IterationLimitReached;
         limit -= 1;
 
-        if (char == '"' and !escape) {
+        if (char == '"') {
             const result = p.text[start..p.index];
             try p.expect('"');
-            return String{ .text = result, .len = len, .escape = escaped };
-        } else if (char == '\\' and !escape) {
+            return String{ .text = result, .len = len, .escape = escape };
+        } else if (char == '\\') {
             escape = true;
-            escaped = true;
-        } else escape = false;
-
-        len += try std.unicode.utf8CodepointSequenceLength(try p.consume());
+            switch (try p.consume()) {
+                'n', 't', 'r', '"', '\\' => {},
+                else => return error.UnexpectedCharacter,
+            }
+        } else len += try std.unicode.utf8CodepointSequenceLength(try p.consume());
     }
     return error.UnexpectedEof;
 }
@@ -143,17 +188,26 @@ fn string(p: *P) !String {
 test "string-plain" {
     var p = P{
         .text =
-        \\"this is a string"
+        \\"this is a\n string"
     };
-    const result = try string(&p);
-    testing.expect(result.len == result.text.len);
-    testing.expectEqualStrings("this is a string", result.text);
+    var result = try string(&p);
+    testing.expect(result.len + 1 == result.text.len);
+    testing.expectEqualStrings("this is a\\n string", result.text);
+    var buffer: [17]u8 = undefined;
+    result.unescape(&buffer);
+    testing.expectEqualStrings("this is a\n string", &buffer);
+
+    p = P{
+        .text =
+        \\""
+    };
+    var result2 = try string(&p);
+    testing.expect(result2.len == 0);
 }
 
 fn multilineString(p: *P) !String {
     // TODO: improve this implementation to not do as much redundant work
     var escape = false;
-    var escaped = false;
     var skip = false;
     var len: usize = 0;
     var limit: usize = p.options.iterations;
@@ -164,24 +218,29 @@ fn multilineString(p: *P) !String {
     while (try p.peek()) |char| {
         if (limit == 0) return error.IterationLimitReached;
         limit -= 1;
-
+        if (skip and (char == ' ' or char == '\n' or char == '\r')) {
+            _ = try p.consume();
+            continue;
+        } else skip = false;
         if (char == '"') {
             const end = p.index;
 
             if (p.exact("\"\"\"")) {
                 const result = p.text[start..end];
 
-                return String{ .text = result, .escape = escaped, .len = len };
+                return String{ .text = result, .escape = escape, .len = if (len == 0) 0 else len + 1 };
             } else |e| switch (e) {
                 error.UnexpectedCharacter => {},
                 else => return e,
             }
-        } else if (char == '\\' and !escape) {
+        } else if (char == '\\') {
+            _ = try p.expect('\\');
             escape = true;
-            escaped = true;
-            if ((try p.oneOf(&[_]u21{ '\n', 'n', 't', 'r', '\"', '\\' })) == '\n') skip = true;
-        } else if (skip and char == ' ') {
-            try p.expect(' ');
+            switch (try p.consume()) {
+                '\n' => skip = true,
+                'n', 't', 'r', '"', '\\' => {},
+                else => return error.UnexpectedCharacter,
+            }
         } else {
             escape = false;
             skip = false;
@@ -200,13 +259,27 @@ test "string-multiline" {
     };
 
     const result = try multilineString(&p);
-    testing.expect(result.len != result.text.len);
-    testing.expect(result.len + 2 == result.text.len);
     testing.expectEqualStrings(
         \\this is a string\
         \\  that spans multiple\n
         \\lines and I loſt the game therefore you will aſ well
     , result.text);
+
+    var buffer: [91]u8 = undefined;
+    result.unescape(&buffer);
+
+    testing.expectEqualStrings(
+        \\this is a stringthat spans multiple
+        \\
+        \\lines and I loſt the game therefore you will aſ well
+    , &buffer);
+
+    p = P{
+        .text =
+        \\""""""
+    };
+    const result2 = try multilineString(&p);
+    testing.expect(result2.len == 0);
 }
 
 fn literalString(p: *P) !String {
