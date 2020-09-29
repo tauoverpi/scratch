@@ -65,8 +65,8 @@ test "parser-consume" {
 }
 
 pub fn expect(p: *P, expected: u21) !void {
-    if (try peek(p)) |char| {
-        if (char != expected) return error.UnexpectedCharacter;
+    if (try peek(p)) |codepoint| {
+        if (codepoint != expected) return error.UnexpectedCharacter;
         _ = try consume(p);
     } else return error.UnexpectedEof;
 }
@@ -213,5 +213,37 @@ test "parser-string1" {
     {
         var p = P{ .text = "" };
         testing.expectError(error.UnexpectedEof, string1(&p, hexadecimal));
+    }
+}
+
+pub fn not(p: *P, pass: anytype) !u21 {
+    const reset = p.*;
+    if (pass(p)) {
+        p.* = reset;
+        return error.UnexpectedCharacter;
+    } else |e| if (error.UnexpectedCharacter != e) return e;
+    return try consume(p);
+}
+
+test "parser-not" {
+    {
+        var p = P{ .text = "a" };
+        testing.expect((try not(&p, decimal)) == 'a');
+    }
+}
+
+pub fn alpha(p: *P) !u21 {
+    if (try peek(p)) |codepoint| {
+        switch (codepoint) {
+            'a'...'z', 'A'...'Z' => return try consume(p),
+            else => return error.UnexpectedCharacter,
+        }
+    }
+    return error.UnexpectedEof;
+}
+test "parser-alpha" {
+    {
+        var p = P{ .text = "a" };
+        testing.expect((try alpha(&p)) == 'a');
     }
 }
