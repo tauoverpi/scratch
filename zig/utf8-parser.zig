@@ -168,9 +168,8 @@ test "parser-hexadecimal" {
 pub fn string(p: *P, pass: anytype) ![]const u8 {
     const start = p.index;
     var limit: usize = p.options.iterations;
-    while (pass(p)) {
+    while (pass(p)) : (limit -= 1) {
         if (limit == 0) return error.IterationLimitReached;
-        limit -= 1;
     } else |e| switch (e) {
         error.UnexpectedEof, error.UnexpectedCharacter => {},
         else => return e,
@@ -195,9 +194,8 @@ pub fn string1(p: *P, pass: anytype) ![]const u8 {
     const start = p.index;
     _ = try pass(p);
     var limit: usize = p.options.iterations;
-    while (pass(p)) {
+    while (pass(p)) : (limit -= 1) {
         if (limit == 0) return error.IterationLimitReached;
-        limit -= 1;
     } else |e| switch (e) {
         error.UnexpectedEof, error.UnexpectedCharacter => {},
         else => return e,
@@ -241,9 +239,14 @@ pub fn alpha(p: *P) !u21 {
     }
     return error.UnexpectedEof;
 }
+
 test "parser-alpha" {
     {
         var p = P{ .text = "a" };
         testing.expect((try alpha(&p)) == 'a');
     }
+}
+
+pub fn space(p: *P) !void {
+    return try expect(p, ' ');
 }
