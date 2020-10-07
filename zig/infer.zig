@@ -10,12 +10,6 @@ const TypeInfo = std.builtin.TypeInfo;
 //      `-> String ----------------------`
 //
 
-// TODO: csv parser
-// TODO: csv row type inference
-//       assumption: CSV files are not trees...
-//                   CSV files have the same type for every row...
-//                   CSV files have equal length rows
-
 const Token = union(enum) {
     Cell: []const u8,
     Nil,

@@ -2,19 +2,19 @@ const std = @import("std");
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
 
-pub const ParserOptions = struct {
-    allocator: ?*Allocator = null,
-    iterations: usize = max,
-
-    const max = std.math.maxInt(usize);
-};
-
 pub const P = struct {
     text: []const u8,
     index: usize = 0,
     line: usize = 0,
     column: usize = 0,
     options: ParserOptions = .{},
+
+    pub const ParserOptions = struct {
+        allocator: ?*Allocator = null,
+        iterations: usize = max,
+
+        const max = std.math.maxInt(usize);
+    };
 };
 
 pub fn peek(p: *P) !?u21 {

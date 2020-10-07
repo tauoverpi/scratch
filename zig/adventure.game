@@ -1,0 +1,126 @@
+#!/usr/bin/env adventure
+
+/ meta data is declared at the top-level of a game file
+
+title
+| Example game with scopes and state
+;
+
+copyright MIT;
+
+synopsis
+| a game
+;
+
+description
+| A game that shows how the language works with
+| all of it's syntax in use.
+;
+
+start prelude.entrance;
+
+/ <- comment
+/ built-in directives
+/ #reset - reset all state in the game
+/ #say   - display something on the screen
+/ #die   - lose, go back to start (does not reset)
+/ #win   - complete the game
+/ #save  - save game state to file
+/ #load  - load game state from file
+/ #call  - call a zig plugin function (only when used as a DSL in zig comptime)
+/ #goto  - go to a different room
+
+/ declerations allow consistent use of constants
+const location
+| House of Levy
+;
+
+/ optional command-line/start menu parameters (e.g override with `--player-name=clay`)
+option player-name
+| Elen issac
+;
+
+/ scope local objects
+global world[item-detector, golden-key];
+
+/ settings are just objects
+global settings[enable-ghosts];
+
+/ scope decleration, hides scope local objects while adding a name prefix to rooms
+scope prelude {
+
+  / rooms are state machines
+  room entrance {
+    / introductions can be bare and run without user interaction
+    #say
+    | You find yourself in the shadows of the ${location} in the silence of
+    | the night while surrounded by a thick dark forest.
+    | There's no other option than to enter.
+    ;
+
+    / every other action requires some user interaction
+    "enter" -> #goto @hallway;
+    "look around" -> #say
+    | it's too dark to see anything more than the lights of the ${location}
+    ;
+  }
+
+  room hallway {
+    / room local objects allow constraints to be placed
+    / on user actions and belong to the local state of the room
+    objects lights-on;
+
+    / a rule which results in an object will mark it active
+    "switch on the lights" -> #say
+    | click
+    , lights-on
+    ;
+
+    / introductions can be delayed by object requirements (constraints)
+    [lights-on] #say
+    | As the lights turn on you notice a small hole in the wall
+    | beside you, a coat stand with a few old dusty coats, and
+    | a door on the opposite side.
+    ;
+
+    / actions can be limited by object requirements (constraints)
+    [!key] "open the door" -> #say
+    | The door doesn't budge, seems to need a key
+    ;
+    [key]  "open the door" -> #say
+    | The door pops open with a loud bang!
+    | If anyone weren't aware of your arrival, they're now bound to be
+    ;
+
+    [lights-on] "check the floorboards" -> #say
+    | you found a key
+    , key
+    ;
+  }
+}
+
+scope main {
+  global inventory[coin];
+
+  room stairway {
+    object game-intro, strange-key;
+
+    / it's possible to set objects after the intro but no directives
+    [!game-intro] #say
+    | As you enter the main hallway
+    , game-intro
+    ;
+
+    / objects can have an attached value separate from the concept of
+    / having the object
+    [!coin] "pickup the coin" -> coin + 1;
+
+    / constraints on value can constrain actions too
+    [coin < 5] "pay the money cat" -> #say "the money cat doesn't budge";
+    [coin > 5] "pay the money cat" -> coin - 5, strange-key, #say "you obtained a strange key";
+
+    [a / b, c / a, c] "" -> #reset;
+  }
+
+  room storage {}
+}

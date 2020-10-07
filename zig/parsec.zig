@@ -110,12 +110,18 @@ test "many" {
 }
 
 fn parenExpression(p: *ParserContext) !void {
+    const reset = p.*;
+    errdefer p.* = reset;
+
     try p.expect('(');
     try expression(p);
     try p.expect(')');
 }
 
 fn expression(p: *ParserContext) anyerror!void {
+    const reset = p.*;
+    errdefer p.* = reset;
+
     p.expect('+') catch try p.expect('-');
     while (p.expect(' ')) {
         _ = p.many1(std.ascii.isDigit) catch try parenExpression(p);
