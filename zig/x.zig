@@ -48,6 +48,7 @@ const XConnectSetup = struct {
     id_mask: u32,
     motion_buffer_size: u32,
     vendor_length: u16,
+    request_max: u16,
     roots: u8,
     formats: u8,
     image_order: u8,
@@ -56,6 +57,49 @@ const XConnectSetup = struct {
     scanline_pad: u8,
     keycode_min: u8,
     keycode_max: u8,
+    pad: u32,
+};
+
+const XPixmapFormat = struct {
+    depth: u8,
+    bits_per_pixel: u8,
+    scanline_pad: u8,
+    pad: u48,
+};
+
+const XRootWindow = struct {
+    id: u32,
+    colormap: u32,
+    white: u32,
+    black: u32,
+    input_mask: u32,
+    width: u16,
+    height: u16,
+    width_mm: u16,
+    height_mm: u16,
+    maps_min: u16,
+    maps_max: u16,
+    root_visual_id: u32,
+    backing_store: u8,
+    save_unders: u8,
+    depth: u8,
+    depths: u8,
+};
+
+const XDepth = struct {
+    depth: u8,
+    pad: u8,
+    visuals: u16,
+    padd: u32,
+};
+
+const XVisual = struct {
+    group: u8,
+    bits: u8,
+    colormap_entries: u16,
+    mask_red: u32,
+    mask_green: u32,
+    mask_blue: u32,
     pad: u32,
 };
 

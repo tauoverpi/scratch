@@ -1,0 +1,303 @@
+const std = @import("std");
+
+// BLOG: implemented instruction set opcodes as union(enum)
+
+const ConstantPoolTag = enum {
+    class = 7,
+    field_ref = 9,
+    method_ref = 10,
+    interface_method_ref = 11,
+    string = 8,
+    integer = 3,
+    float = 4,
+    long = 5,
+    double = 6,
+    name_and_type = 12,
+    utf8 = 1,
+    method_handle = 15,
+    method_type = 16,
+    invoke_dynamic = 18,
+};
+
+const ConstantClassInfo = struct {
+    tag: u8,
+    name_index: u16,
+};
+
+const Instruction = union(enum) {
+    aaload = 0x32,
+    aastore = 0x53,
+    aconst_null = 0x01,
+
+    /// Load from given index from the local variable array of the current frame
+    /// to the parameter stack.
+    aload: u16 = 0x19,
+    aload_0 = 0x2a,
+    aload_1 = 0x2b,
+    aload_2 = 0x2c,
+    aload_3 = 0x2d,
+
+    /// TODO
+    anewarray: u16 = 0xbd,
+    areturn = 0xb0,
+    arraylength = 0xbe,
+
+    astore: u16 = 0x3a,
+    astore_0 = 0x4b,
+    astore_1 = 0x4c,
+    astore_2 = 0x4d,
+    astore_3 = 0x4e,
+
+    athrow = 0xbf,
+    baload = 0x33,
+    bastore = 0x54,
+    bipush: u8 = 0x10,
+
+    caload = 0x34,
+    castore = 0x55,
+    checkcast: u16 = 0xc0,
+
+    d2f = 0x90, // ( d -- f )
+    d2i = 0x8e, // ( d -- i )
+    d2l = 0x8f, // ( d -- l )
+    dadd = 0x63, // ( d d -- d )
+    daload = 0x31,
+    dastore = 0x52,
+    dcmpg = 0x98, // ( d d -- 1 | 0 | -1 )
+    dcmpl = 0x97, // ( d d -- 1 | 0 | -1 )
+    dconst_0 = 0x0e, // ( -- 0.0 )
+    dconst_1 = 0x0f, // ( -- 1.0 )
+    ddiv = 0x6f, // ( d1 d2 -- d )
+    dload: u16 = 0x18, // ( -- d )
+    dload_0 = 0x26, // ( -- d )
+    dload_1 = 0x27, // ( -- d )
+    dload_2 = 0x28, // ( -- d )
+    dload_3 = 0x29, // ( -- d )
+    dmul = 0x6b, // ( d1 d2 -- d )
+    dneg = 0x77, // ( d -- -d )
+    drem = 0x73, // ( d1 d2 -- d )
+    dreturn = 0xaf, // ( d -- )
+    dstore: u16 = 0x39, // ( d -- )
+    dstore_0 = 0x47, // ( d -- )
+    dstore_2 = 0x48, // ( d -- )
+    dstore_3 = 0x49, // ( d -- )
+    dstore_4 = 0x4a, // ( d -- )
+    dsub = 0x67, // ( d1 d2 -- d )
+
+    dup = 0x59, // ( x -- x x )
+    dup_x1 = 0x5a, // ( x2 x1 -- x1 x2 x1 )
+    dup_x2 = 0x5b, // ( x3 x2 x1 -- x1 x3 x2 x1 ) or ( x2 x1 -- x1 x2 x1 )
+    dup2 = 0x5c, // ( x2 x1 -- x2 x1 x2 x1 ) or ( x -- x x )
+    dup2_x1 = 0x5d, // ( x3 x2 x1 -- x2 x1 x3 x2 x1 ) or ( x2 x1 -- x1 x2 x1 )
+    dup2_x2 = 0x5e, // ( x4 x3 x2 x1 -- x2 x1 x4 x3 x2 x1 ) or ( x3 x2 x1 -- x2 x1 x3 x2 x1 )
+
+    f2d = 0x8d, // ( f -- d )
+    f2i = 0x8b, // ( f -- i )
+    f2l = 0x8c, // ( f -- l )
+    fadd = 0x62, // ( f f -- f )
+    faload = 0x30, // ( a i -- f )
+    fastore = 0x51, // ( a i f -- )
+    fcmpg = 0x96, // ( f1 f2 -- 1 | 0 | -1 )
+    fcmpl = 0x95, // ( f1 f2 -- 1 | 0 | -1 )
+    fconst_0 = 0x0b, // ( -- 0.0 )
+    fconst_1 = 0x0c, // ( -- 1.0 )
+    fconst_2 = 0x0d, // ( -- 2.0 )
+    fdiv = 0x6e, // ( f f -- f )
+    fload: u16 = 0x17, // ( -- f )
+    fload_0 = 0x22, // ( -- f )
+    fload_1 = 0x23, // ( -- f )
+    fload_2 = 0x24, // ( -- f )
+    fload_3 = 0x25, // ( -- f )
+    fmul = 0x6a, // ( f f -- f )
+    fneg = 0x76, // ( f -- -f )
+    frem = 0x72, // ( f f -- f )
+    freturn = 0xae, // ( f -- )
+    fstore: u16 = 0x38, // ( f -- )
+    fstore_0 = 0x43, // ( f -- )
+    fstore_1 = 0x44, // ( f -- )
+    fstore_2 = 0x45, // ( f -- )
+    fstore_3 = 0x46, // ( f -- )
+    fsub = 0x66, // ( f f -- f )
+
+    // TODO
+    getfield: u64 = 0xb4, // ( a -- x )
+    getstatic: u32 = 0xb2, // ( -- x )
+    goto: u32 = 0xa7, // ( -- )
+    goto_w: u64 = 0xc8, // ( -- )
+
+    i2b = 0x91, // ( i -- b )
+    i2c = 0x92, // ( i -- c )
+    i2d = 0x87, // ( i -- d )
+    i2f = 0x86, // ( i -- f )
+    i2l = 0x85, // ( i -- l )
+    i2s = 0x93, // ( i -- s )
+    iadd = 0x60, // ( i i -- i )
+    iaload = 0x2e, // ( a i -- i )
+    iand = 0x7e, // ( i i -- i )
+    iastore = 0x4f, // ( a i v -- )
+    iconst_m1 = 0x02, // ( -- -1 )
+    iconst_0 = 0x03, // ( -- 0 )
+    iconst_1 = 0x04, // ( -- 1 )
+    iconst_2 = 0x05, // ( -- 2 )
+    iconst_3 = 0x06, // ( -- 3 )
+    iconst_4 = 0x07, // ( -- 4 )
+    iconst_5 = 0x08, // ( -- 5 )
+    idiv = 0x6c, // ( i i -- i )
+    if_acmpeq: u16 = 0xa5, // ( i i -- )
+    if_acmpne: u16 = 0xa6, // ( i i -- )
+    if_icmpeq: u16 = 0x9f, // ( i i -- )
+    if_icmpne: u16 = 0xa0, // ( i i -- )
+    if_icmplt: u16 = 0xa1, // ( i i -- )
+    if_icmpge: u16 = 0xa2, // ( i i -- )
+    if_icmpgt: u16 = 0xa3, // ( i i -- )
+    if_icmple: u16 = 0xa4, // ( i i -- )
+    ifnonnull: u16 = 0xc7, // ( a -- )
+    ifnull: u16 = 0xc6, // ( a -- )
+    iinc: struct { index: u8, constant: u8 }, // ( -- )
+    iload: u8 = 0x15, // ( -- i )
+    iload_0 = 0x1a, // ( -- i )
+    iload_1 = 0x1b, // ( -- i )
+    iload_2 = 0x1c, // ( -- i )
+    iload_3 = 0x1d, // ( -- i )
+    imul = 0x68, // ( i i -- i )
+    ineg = 0x74, // ( i -- -i )
+    ior = 0x80, // ( i i -- i )
+    irem = 0x70, // ( i i -- i )
+    ireturn = 0xac, // ( i -- )
+    ishl = 0x78, // ( i i -- i )
+    ishr = 0x7a, // ( i i -- i )
+    istore: u8 = 0x36, // ( i -- )
+    istore_0 = 0x3b, // ( i -- )
+    istore_1 = 0x3c, // ( i -- )
+    istore_2 = 0x3d, // ( i -- )
+    istore_3 = 0x3e, // ( i -- )
+    isub = 0x64, // ( i i -- i )
+    iushr = 0x7c, // ( i i -- i )
+    ixor = 0x82, // ( i i -- i )
+
+    instanceof: u16 = 0xc1, // ( a -- x )
+    invokedynamic: struct { index: u16, zero: u16 = 0 } = 0xba, // ( x0 ... xN -- )
+    invokeinterface: struct { index: u16, count: u8, zero: u8 = 0 } = 0xb9, // ( a x0 ... xN -- )
+    invokespecial: u16 = 0xb7, // ( a x0 ... xN -- )
+    invokestatic: u16 = 0xb8, // ( x0 ... xN -- )
+    invokevirtual: u16 = 0xb6, // ( a x0 ... xN -- )
+
+    jsr: u16 = 0xa8, // ( -- a )
+    jsr_w: u32 = 0xc9, // ( -- a )
+
+    l2d = 0x8a, // ( l -- d )
+    l2f = 0x89, // ( l -- f )
+    l2i = 0x88, // ( l -- i )
+    ladd = 0x61, // ( l l -- l )
+    laload = 0x2f, // ( a i -- l )
+    land = 0x7f, // ( l l -- l )
+    lastore = 0x50, // ( a i l -- )
+    lcmp = 0x94, // ( l l -- 1  0 | -1 )
+    lconst_0 = 0x09, // ( -- 0 )
+    lconst_1 = 0x0a, // ( -- 1 )
+    ldc: u8 = 0x12, // ( -- l )
+    ldc_w: u16 = 0x13, // ( -- l )
+    ldc2_w: u16 = 0x14, // ( -- l )
+    ldiv = 0x6d, // ( l l -- l )
+    lload: u8 = 0x16, // ( -- l )
+    lload_0 = 0x1e, // ( -- l )
+    lload_1 = 0x1f, // ( -- l )
+    lload_2 = 0x20, // ( -- l )
+    lload_3 = 0x21, // ( -- l )
+    lmul = 0x69, // ( l l -- l )
+    lneg = 0x75, // ( l -- -l )
+    lookupswitch: []const u8, // ( key -- )
+    lor = 0x81, // ( l l -- l )
+    lrem = 0x71, // ( l l -- l )
+    lreturn = 0xad, // ( l -- )
+    lshl = 0x79, // ( l l -- l )
+    lshr = 0x7b, // ( l l -- l )
+    lstore: u8 = 0x37, // ( l -- )
+    lstore_0 = 0x3f, // ( l -- )
+    lstore_1 = 0x40, // ( l -- )
+    lstore_2 = 0x41, // ( l -- )
+    lstore_3 = 0x42, // ( l -- )
+    lsub = 0x65, // ( l l -- l )
+    lushr = 0x7d, // ( l l -- l )
+    lxor = 0x83, // ( l l -- l )
+
+    monitorenter = 0xc2, // ( a -- )
+    monitorexit = 0xc3, // ( a -- )
+    multianewarray: struct { index: u16, dimensions: u8 } = 0xc5, // ( x0 ... xN -- a )
+    new: u16 = 0xbb, // ( -- a )
+    // 4 bool
+    // 5 char
+    // 6 float
+    // 7 double
+    // 8 byte
+    // 9 short
+    // 10 int
+    // 11 long
+    atype = 0xbc, // ( i -- a )
+    nop = 0x00, // ( -- )
+    pop = 0x57, // ( x -- )
+    pop2 = 0x58, // ( x x -- )
+    putfield: u16 = 0xb5, // ( a x -- )
+    putstatic: u16 = 0xb3, // ( x -- )
+    ret = 0xa9, // ( i -- )
+    @"return" = 0xb1, // ( -- )
+    saload = 0x35, // ( a i -- x )
+};
+
+// TODO pin memeory for zig allocated types
+// TODO have java classes be opaque with methods
+// TODO translate-class
+// TODO reflection support with manual aquire/release and no safety
+
+test "minimal-class-loadable-with-jvm" {
+    const bytes = [_]u8{
+        0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x31, 0x00, 0x05, 0x07, 0x00,
+        0x04, 0x07, 0x00, 0x03, 0x01, 0x00, 0x10, 0x6a, 0x61, 0x76, 0x61, 0x2f,
+        0x6c, 0x61, 0x6e, 0x67, 0x2f, 0x4f, 0x62, 0x6a, 0x65, 0x63, 0x74, 0x01,
+        0x00, 0x07, 0x6d, 0x69, 0x6e, 0x69, 0x6d, 0x61, 0x6c, 0x00, 0x01, 0x00,
+        0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    };
+    std.debug.print("{} ?<<<", .{std.meta.fields(Instruction).len});
+
+    var stream = std.io.fixedBufferStream(&bytes);
+    var ser = std.io.deserializer(.Big, .Byte, stream.reader());
+
+    const part = try ser.deserialize(struct {
+        magic: u32,
+        minor_version: u16,
+        major_version: u16,
+        constant_pool_count: u16,
+    });
+
+    std.debug.print("{x}\n", .{part});
+}
+
+test "minimal-class-runnable-with-jvm" {
+    const bytes = [_]u8{
+        0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x31, 0x00, 0x16, 0x08, 0x00,
+        0x15, 0x07, 0x00, 0x14, 0x07, 0x00, 0x13, 0x01, 0x00, 0x04, 0x6d, 0x61,
+        0x69, 0x6e, 0x01, 0x00, 0x16, 0x28, 0x5b, 0x4c, 0x6a, 0x61, 0x76, 0x61,
+        0x2f, 0x6c, 0x61, 0x6e, 0x67, 0x2f, 0x53, 0x74, 0x72, 0x69, 0x6e, 0x67,
+        0x3b, 0x29, 0x56, 0x01, 0x00, 0x04, 0x43, 0x6f, 0x64, 0x65, 0x09, 0x00,
+        0x0e, 0x00, 0x0f, 0x0a, 0x00, 0x09, 0x00, 0x0a, 0x07, 0x00, 0x0d, 0x0c,
+        0x00, 0x0b, 0x00, 0x0c, 0x01, 0x00, 0x07, 0x70, 0x72, 0x69, 0x6e, 0x74,
+        0x6c, 0x6e, 0x01, 0x00, 0x15, 0x28, 0x4c, 0x6a, 0x61, 0x76, 0x61, 0x2f,
+        0x6c, 0x61, 0x6e, 0x67, 0x2f, 0x4f, 0x62, 0x6a, 0x65, 0x63, 0x74, 0x3b,
+        0x29, 0x56, 0x01, 0x00, 0x13, 0x6a, 0x61, 0x76, 0x61, 0x2f, 0x69, 0x6f,
+        0x2f, 0x50, 0x72, 0x69, 0x6e, 0x74, 0x53, 0x74, 0x72, 0x65, 0x61, 0x6d,
+        0x07, 0x00, 0x12, 0x0c, 0x00, 0x10, 0x00, 0x11, 0x01, 0x00, 0x03, 0x6f,
+        0x75, 0x74, 0x01, 0x00, 0x15, 0x4c, 0x6a, 0x61, 0x76, 0x61, 0x2f, 0x69,
+        0x6f, 0x2f, 0x50, 0x72, 0x69, 0x6e, 0x74, 0x53, 0x74, 0x72, 0x65, 0x61,
+        0x6d, 0x3b, 0x01, 0x00, 0x10, 0x6a, 0x61, 0x76, 0x61, 0x2f, 0x6c, 0x61,
+        0x6e, 0x67, 0x2f, 0x53, 0x79, 0x73, 0x74, 0x65, 0x6d, 0x01, 0x00, 0x10,
+        0x6a, 0x61, 0x76, 0x61, 0x2f, 0x6c, 0x61, 0x6e, 0x67, 0x2f, 0x4f, 0x62,
+        0x6a, 0x65, 0x63, 0x74, 0x01, 0x00, 0x05, 0x68, 0x65, 0x6c, 0x6c, 0x6f,
+        0x01, 0x00, 0x0c, 0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x20, 0x57, 0x6f, 0x72,
+        0x6c, 0x64, 0x21, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x01, 0x00, 0x09, 0x00, 0x04, 0x00, 0x05, 0x00, 0x01, 0x00,
+        0x06, 0x00, 0x00, 0x00, 0x15, 0x00, 0x0a, 0x00, 0x0a, 0x00, 0x00, 0x00,
+        0x09, 0xb2, 0x00, 0x07, 0x12, 0x01, 0xb6, 0x00, 0x08, 0xb1, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+    };
+    var stream = std.io.fixedBufferStream(&bytes);
+}
