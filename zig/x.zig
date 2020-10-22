@@ -10,61 +10,110 @@ const XAuth = struct {
     pub const Family = u16;
 };
 
-const XAuthIterator = struct {
-    cookies: []const u8,
-    i: usize = 0,
+const XConnectHeader = struct {
+    order: Order,
+    major: u16 = 11,
+    minor: u16 = 0,
+    name: []const u8,
+    data: []const u8,
 
-    fn item(it: *XAuthIterator) ![]const u8 {
-        if (it.cookies[it.i..].len < 2) return error.MalformedCookie;
-        const len = std.mem.readIntSliceBig(u16, it.cookies[it.i .. it.i + 2]);
-        it.i += 2;
-        if (it.cookies[it.i..].len < len) return error.MalformedCookie;
-        defer it.i += len;
-        return it.cookies[it.i .. it.i + len];
-    }
+    pub const Order = enum(u8) { little = 'l', big = 'B' };
 
-    pub fn next(it: *XAuthIterator) !?XAuth {
-        if (it.i == it.cookies.len) return null;
-
-        var r: XAuth = undefined;
-        r.family = std.mem.readIntSliceNative(u16, it.cookies[it.i..2]);
-        it.i += 2;
-        r.address = try it.item();
-        r.display = try it.item();
-        r.name = try it.item();
-        r.data = try it.item();
-
-        return r;
+    pub fn serialize(self: @This(), serializer: anytype) !void {
+        try serializer.serialize(@enumToInt(self.order));
+        try serializer.serialize(@as(u8, 0));
+        try serializer.serialize(self.major);
+        try serializer.serialize(self.minor);
+        try serializer.serialize(@intCast(u16, self.name.len));
+        try serializer.serialize(@intCast(u16, self.data.len));
+        try serializer.serialize(@as(u16, 0));
+        try serializer.serialize(self.name);
+        try serializer.serialize(@as(u16, 0));
+        try serializer.serialize(self.data);
+        try serializer.serialize(@as(u16, 0));
     }
 };
 
-const XConnectHeader = packed struct {
-    order: u8 = 'l',
-    unused: u8 = 0,
-    major: u16 = 11,
-    minor: u16 = 0,
-    name: u16,
-    data: u16,
-    unused2: u16 = 0,
+const XConnectReply = struct {
+    success: u8,
+    pad: u8,
+    major: u16,
+    minor: u16,
+    length: u16,
+};
+
+const XConnectSetup = struct {
+    release: u32,
+    id_base: u32,
+    id_mask: u32,
+    motion_buffer_size: u32,
+    vendor_length: u16,
+    roots: u8,
+    formats: u8,
+    image_order: u8,
+    bitmap_order: u8,
+    scanline_unit: u8,
+    scanline_pad: u8,
+    keycode_min: u8,
+    keycode_max: u8,
+    pad: u32,
 };
 
 test "" {
-    const cookie_text = @embedFile("/home/tau/.Xauthority");
-    var it = XAuthIterator{ .cookies = cookie_text };
-    var xauth: XAuth = (try it.next()).?;
-
-    var buffer: [1024]u8 = [_]u8{0} ** 1024;
-    const header: XConnectHeader = .{ .name = @intCast(u16, xauth.name.len), .data = @intCast(u16, xauth.data.len) };
-    std.mem.copy(u8, &buffer, std.mem.asBytes(&header));
-    std.mem.copy(u8, buffer[@sizeOf(XConnectHeader)..], xauth.name);
-    std.mem.copy(u8, buffer[@sizeOf(XConnectHeader) + xauth.data.len + 1 ..], xauth.data);
-    const message = buffer[0 .. @sizeOf(XConnectHeader) + xauth.data.len + 1 + xauth.name.len + 1];
-
-    std.debug.print("\n{}\n", .{xauth});
-    std.debug.print("\nout {e}\n", .{message});
+    const text = @embedFile("/home/tau/.Xauthority");
     var sock = try std.net.connectUnixSocket("/tmp/.X11-unix/X0");
-    _ = try sock.write(message);
-    const len = try sock.read(&buffer);
-    std.debug.print("in  {} {e}\n", .{ len, buffer[0..len] });
     defer sock.close();
+
+    var buffer: [1024 * 1024]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buffer);
+    var ser = std.io.serializer(.Little, .Byte, fbs.writer());
+
+    _ = std.mem.readIntSliceBig(u16, text[0..]);
+    const x = std.mem.readIntSliceBig(u16, text[2..]);
+    const address = text[4 .. 4 + x];
+    const y = std.mem.readIntSliceBig(u16, text[4 + x ..]);
+    const display = text[6 + x .. 6 + x + y];
+    const z = std.mem.readIntSliceBig(u16, text[6 + x + y ..]);
+    const name = text[8 + x + y .. 8 + x + y + z];
+    const w = std.mem.readIntSliceBig(u16, text[8 + x + y + z ..]);
+    const data = text[10 + x + y + z .. 10 + x + y + z + w];
+
+    const header: XConnectHeader = .{
+        .order = .little,
+        .name = name,
+        .data = data,
+    };
+
+    try ser.serialize(header);
+
+    _ = try sock.write(fbs.getWritten());
+    const len = try sock.read(&buffer);
+
+    fbs = std.io.fixedBufferStream(&buffer);
+    var dser = std.io.deserializer(.Little, .Byte, fbs.reader());
+    const reply = try dser.deserialize(XConnectReply);
+    const setup = try dser.deserialize(XConnectSetup);
+
+    std.debug.print(
+        \\
+        \\address  : {}
+        \\display  : {}
+        \\name     : {}
+        \\data     : {x}
+        \\sending
+        \\response : {x}
+        \\reply    : {}
+        \\setup    : {}
+        \\
+    , .{
+        address,
+        display,
+        name,
+        data,
+        buffer[0..len],
+        reply,
+        setup,
+    });
+
+    var length = reply.length * 4;
 }
