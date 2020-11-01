@@ -1,36 +1,32 @@
 const std = @import("std");
-const P = struct {
-    telegram: []const u8,
-    index: usize = 0,
-    state: State = .startbyte,
-    checksum: u8 = 0,
-    length: u8 = 0,
-    byte: u8 = 0,
 
-    var frame: @Frame(consume) = undefined;
+fn Steppable(comptime f: anytype) type {
+    return struct {
+        state: @Frame(f),
 
-    const Error = error{UnexpectedEof};
+        pub fn init() @This() {
+            return .{ .state = async f() };
+        }
 
-    const State = enum { startbyte, lengthbyte, control, address, info };
+        pub fn next(self: *@This()) void {
+            resume self.state;
+        }
+    };
+}
 
-    pub fn init(telegram: []const u8) P {
-        var p = P{ .telegram = telegram };
-        frame = async p.consume();
-        return p;
-    }
-
-    pub fn consume(p: *P) error{UnexpectedEof}!void {
+fn foo() void {
+    while (true) {
+        std.debug.print("hi\n", .{});
         suspend;
-        std.debug.print("{}\n", .{p});
-        if (p.index < p.telegram.len) return error.UnexpectedEof;
-        p.byte = p.telegram[p.index];
-        p.index += 1;
-        wait consume(p);
     }
-};
+}
 
-test "" {
-    var p = P.init(&[_]u8{ 0x68, 0x3, 0x3, 0x68 });
-    resume P.frame;
-    resume P.frame;
+pub fn main() !void {
+    var frame = Steppable(foo).init();
+    const reader = std.io.getStdIn().reader();
+    while (true) {
+        _ = try reader.skipUntilDelimiterOrEof('\n');
+        frame.next();
+        std.debug.print("there\n", .{});
+    }
 }

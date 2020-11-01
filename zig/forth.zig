@@ -1,135 +1,254 @@
 const std = @import("std");
 
-fn Stack(size: usize) type {
+//! This is by no means an efficient implementation and quite a bit of redundant
+//! error checking is performed within the interpreter.
+
+const Opcode = union(enum(u16)) {
+    // special
+    nop,
+    next,
+    docol,
+    lit: u32,
+    flit: f64,
+
+    // stack
+    dup,
+    swap,
+    drop,
+    over,
+    rot,
+    @"-rot",
+    dstore,
+
+    // control-flow
+    rpush,
+    rpop,
+    rstore,
+    ipstore,
+    jmp,
+    jnz,
+
+    // bit manipulation
+    band,
+    bor,
+    bxor,
+    clz,
+    ctz,
+    shl,
+    ashr,
+    shr,
+
+    // atomics
+    armw,
+    astore,
+    aload,
+    cmpxchg_s,
+    cmpxchg_w,
+    fence,
+
+    // arithmetic
+    imul,
+    idiv,
+    mul,
+    add,
+    sub,
+    divmod,
+    rem,
+
+    // vm memory
+    @"align",
+    fetch,
+    cfetch,
+    wfetch,
+    store,
+    cstore,
+    wstore,
+    comma,
+    ccomma,
+    wcomma,
+
+    // hardware memory
+    mmap,
+    munmap,
+
+    // i/o
+    key,
+    emit,
+    @"type",
+
+    // floating-point
+    fsqrt,
+    fsin,
+    fcos,
+    fexp,
+    flog,
+    flog10,
+    fabs,
+    ffloor,
+    fceil,
+    fround,
+
+    // word
+    create,
+    does,
+    tailcall,
+
+    // meta
+    see,
+    @"[",
+    @"]",
+    imm,
+
+    // special
+    halt,
+    // all values after this map to user defined opcodes
+};
+
+pub fn Forth(comptime image: []const u8, comptime kb: usize) type {
+    var buffer: [image.len]u8 = undefined;
+    std.mem.copy(u8, &buffer, image);
     return struct {
-        stack: [size]u16 = undefined,
-        index: usize = 0,
+        ip: usize = 0,
+        dp: usize = 0,
+        rp: usize = 0,
+        fp: usize = 0,
+        dstk: [8]u32 = undefined,
+        rstk: [16]u32 = undefined,
+        fstk: [8]f64 = undefined,
+        memory: [1024 * kb]u8 = buffer ++ [_]u8{0} ** (1024 * kb - image.len),
 
         const Self = @This();
 
-        pub fn pop(m: *Self) !u16 {
-            if (m.index == 0) return error.StackUndeflow;
-            m.index -= 1;
-            return m.stack[m.index];
+        fn dpop(vm: *Self) !u32 {
+            if (vm.dp == 0) return error.DataStackUnderflow;
+            vm.dp -= 1;
+            return vm.dstk[vm.dp];
         }
 
-        pub fn push(m: *Self, word: u16) !void {
-            if (m.index > m.stack.len) return error.StackOverflow;
-            m.stack[m.index] = word;
-            m.index += 1;
+        fn rpop(vm: *Self) !u32 {
+            if (vm.rp == 0) return error.ReturnStackUnderflow;
+            vm.rp -= 1;
+            return vm.rstk[vm.rp];
+        }
+
+        fn fpop(vm: *Self) !f32 {
+            if (vm.fp == 0) return error.FloatingPointStackUnderflow;
+            vm.fp -= 1;
+            return vm.fstk[vm.fp];
+        }
+
+        fn dpush(vm: *Self, d: u32) !void {
+            if (vm.dp == vm.dstk.len) return error.DataStackOverflow;
+            vm.dstk[vm.dp] = d;
+            std.debug.print("push {}\n", .{vm.dstk[vm.dp]});
+            vm.dp += 1;
+        }
+
+        fn rpush(vm: *Self, r: u32) !void {
+            if (vm.fp == vm.rstk.len) return error.ReturnStackOverflow;
+            vm.rstk[vm.rp] = r;
+            vm.rp += 1;
+        }
+
+        fn fpush(vm: *Self, f: f32) !void {
+            if (vm.fp == vm.fstk.len) return error.FloatingPointStackOverflow;
+            vm.fstk[vm.fp] = f;
+            vm.fp += 1;
+        }
+
+        fn drequire(vm: *Self, size: usize) !void {
+            if (vm.dp < size) return error.DataStackUnderflow;
+        }
+
+        fn rrequire(vm: *Self, size: usize) !void {
+            if (vm.rp < size) return error.ReturnStackUnderflow;
+        }
+
+        fn frequire(vm: *Self, size: usize) !void {
+            if (vm.fp < size) return error.FloatingPointStackUnderflow;
+        }
+
+        pub fn next(vm: *Self) !void {
+            const inst = std.mem.readIntSliceBig(u16, vm.memory[vm.ip..]);
+            const ip = vm.ip;
+            vm.ip += 2;
+            if (inst > @enumToInt(Opcode.halt)) {
+                std.debug.print("inst {}\n", .{inst});
+                // user defined words
+            } else {
+                const op = @intToEnum(@TagType(Opcode), inst);
+                std.debug.print("inst {}\n", .{op});
+
+                switch (op) {
+                    // special
+                    .nop => {},
+                    .lit => {
+                        try vm.dpush(std.mem.readIntSliceBig(u32, vm.memory[vm.ip..]));
+                        vm.ip += 4;
+                    },
+
+                    // stack
+                    .dup => {
+                        const a = try vm.dpop();
+                        try vm.dpush(a);
+                    },
+
+                    .swap => {
+                        const a = try vm.dpop();
+                        const b = try vm.dpop();
+                        try vm.dpush(a);
+                        try vm.dpush(b);
+                    },
+                    .drop => _ = try vm.dpop(),
+                    .over => {
+                        const a = try vm.dpop();
+                        const b = try vm.dpop();
+                        try vm.dpush(b);
+                        try vm.dpush(a);
+                        try vm.dpush(b);
+                    },
+                    .rot => {},
+
+                    // arithmetic
+                    .add => try vm.dpush((try vm.dpop()) +% (try vm.dpop())),
+                    .sub => try vm.dpush((try vm.dpop()) +% (try vm.dpop())),
+                    .mul => try vm.dpush((try vm.dpop()) *% (try vm.dpop())),
+                    .imul => try vm.dpush(@bitCast(u32, @bitCast(i32, try vm.dpop()) *% @bitCast(i32, try vm.dpop()))),
+
+                    // special
+                    .halt => return error.Halt,
+                    else => return error.Todo,
+                }
+            }
         }
     };
 }
-
-const Forth = struct {
-    data: Stack(8) = Stack(8){},
-    cont: Stack(16) = Stack(16){},
-    ip: u16 = 0,
-    memory: []u8,
-
-    pub const Instruction = packed enum(u16) {
-        next,
-        halt,
-        jz,
-        add,
-        fetch,
-        store,
-        lit,
-        docol,
-        _,
-    };
-
-    fn peek(vm: *Forth) ?u16 {
-        if (vm.ip + 4 < vm.memory.len) {
-            return std.mem.readIntSliceLittle(u16, vm.memory[vm.ip + 2 .. vm.ip + 4]);
-        } else return null;
-    }
-
-    pub fn step(vm: *Forth) !void {
-        errdefer |e| {
-            std.debug.print(
-                \\vm crash {} {}
-                \\
-            , .{ vm.ip, @errorName(e) });
-        }
-
-        const instruction = @intToEnum(Instruction, std.mem.readIntSliceLittle(u16, vm.memory[vm.ip .. vm.ip + 2]));
-
-        std.debug.print("data ", .{});
-        for (vm.data.stack[0..vm.data.index]) |word| std.debug.print("{} ", .{word});
-        std.debug.print("\ncont ", .{});
-        for (vm.data.stack[0..vm.cont.index]) |word| std.debug.print("{} ", .{word});
-        std.debug.print("\n[{x:0>4}]: {}\n", .{ vm.ip, instruction });
-
-        switch (instruction) {
-            .docol => {
-                try vm.cont.push(vm.ip + 2);
-                if (vm.peek()) |word| {
-                    vm.ip = word;
-                } else return error.OutOfBoundsJump;
-            },
-            .next => {
-                vm.ip = try vm.cont.pop();
-            },
-
-            .halt => return error.Halt,
-
-            .jz => {
-                if (vm.peek()) |word| {
-                    if (word + 2 > vm.memory.len) return error.OutOfBoundsJump;
-                    if (word & 1 == 1) return error.UnalignedJump;
-                    if ((try vm.data.pop()) == 0) {
-                        vm.ip = word;
-                    } else vm.ip += 4;
-                } else return error.OutOfBounds;
-            },
-
-            .add => {
-                defer vm.ip += 2;
-                if (vm.data.index > 2) return error.StackUndeflow;
-                const value = try vm.data.pop();
-                vm.data.stack[vm.data.index - 1] +%= value;
-            },
-
-            .lit => {
-                defer vm.ip += 4;
-                if (vm.peek()) |word| {
-                    try vm.data.push(word);
-                } else return error.OutOfBoundsFetch;
-            },
-
-            else => return error.UnknownInstruction,
-        }
-    }
-};
-
-fn b(comptime in: Forth.Instruction) [2]u8 {
-    return @bitCast([2]u8, @enumToInt(in));
-}
-
-fn image(comptime tup: anytype) [std.meta.fields(@TypeOf(tup)).len * 2]u8 {
-    const T = @TypeOf(tup);
-    comptime var buffer: []const u8 = &[_]u8{};
-    const fields = std.meta.fields(T);
-    inline for (fields) |field| {
-        buffer = buffer ++ switch (field.field_type) {
-            comptime_int => @bitCast([2]u8, @as(u16, @field(tup, field.name))),
-            else => @bitCast([2]u8, @enumToInt(@field(Forth.Instruction, @tagName(@field(tup, field.name))))),
-        };
-    }
-    var result: [std.meta.fields(@TypeOf(tup)).len * 2]u8 = undefined;
-    std.mem.copy(u8, &result, buffer);
-    return result;
-}
-
-const program = image(.{ .lit, 0xfffe, .lit, 2, .add, .jz, 0 });
 
 test "" {
-    var memory = program ++ (b(.halt) ** (1024 * 1024 - program.len));
-    var vm = Forth{ .memory = &memory };
+    var vm = Forth(&[_]u8{ 0, 0 }, 8){};
+    try vm.next();
+}
 
-    var limit: usize = 10;
-    while (vm.step()) : (limit -= 1) {
-        if (limit == 0) return error.IterationLimitReached;
-    } else |e| return e;
+test "add" {
+    var vm = Forth(&[_]u8{
+        0,
+        @enumToInt(Opcode.lit),
+        0,
+        0,
+        0,
+        2,
+        0,
+        @enumToInt(Opcode.lit),
+        0,
+        0,
+        0,
+        2,
+        0,
+        @enumToInt(Opcode.add),
+    }, 8){};
+
+    try vm.next();
+    try vm.next();
+    try vm.next();
+    std.testing.expectEqual(@as(u32, 4), vm.dstk[0]);
 }

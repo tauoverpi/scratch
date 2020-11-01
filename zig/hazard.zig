@@ -1,13 +1,17 @@
 const std = @import("std");
 
-fn HazardPointerRecord(comptime T: type) type {
-    return struct {
-        next: ?*HazardPointerRecord,
-        node: *T,
-        active: bool,
-    };
-}
+const ItemList = struct {
+    next: ?*ItemList,
+    data: [256]u8,
+    slice: []const u8,
+};
 
-/// Hazard table keeping track of all references currently in a reading state
-var global_hazard_table: ?HazardPointerRecord(usize) = null;
-threadlocal var hazard_table: ?HazardPointerRecord(usize) = null;
+const Node = struct {
+    address: u64,
+    count: usize,
+    items: *?ItemList,
+    left: *?Node,
+    right: *?Node,
+};
+
+var tree: ?Node = null;

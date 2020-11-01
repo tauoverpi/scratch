@@ -1,4 +1,5 @@
 const std = @import("std");
+const log = std.log.scoped(.zx11);
 
 const XAuth = struct {
     family: Family,
@@ -17,7 +18,14 @@ const XConnectHeader = struct {
     name: []const u8,
     data: []const u8,
 
-    pub const Order = enum(u8) { little = 'l', big = 'B' };
+    pub const Order = enum(u8) {
+        little = 'l',
+        big = 'B',
+
+        pub fn jsonStringify(value: Order, options: anytype, writer: anytype) !void {
+            try writer.print("{}", .{value});
+        }
+    };
 
     pub fn serialize(self: @This(), serializer: anytype) !void {
         try serializer.serialize(@enumToInt(self.order));
@@ -64,7 +72,8 @@ const XPixmapFormat = struct {
     depth: u8,
     bits_per_pixel: u8,
     scanline_pad: u8,
-    pad: u48,
+    pad: u8,
+    pad2: u32,
 };
 
 const XRootWindow = struct {
@@ -90,7 +99,7 @@ const XDepth = struct {
     depth: u8,
     pad: u8,
     visuals: u16,
-    padd: u32,
+    pad2: u32,
 };
 
 const XVisual = struct {
@@ -103,12 +112,12 @@ const XVisual = struct {
     pad: u32,
 };
 
-test "" {
+test "connect" {
     const text = @embedFile("/home/tau/.Xauthority");
     var sock = try std.net.connectUnixSocket("/tmp/.X11-unix/X0");
     defer sock.close();
 
-    var buffer: [1024 * 1024]u8 = undefined;
+    var buffer: [1024]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buffer);
     var ser = std.io.serializer(.Little, .Byte, fbs.writer());
 
@@ -131,12 +140,16 @@ test "" {
     try ser.serialize(header);
 
     _ = try sock.write(fbs.getWritten());
-    const len = try sock.read(&buffer);
+    const len = try sock.read(buffer[0 .. @sizeOf(XConnectReply) + @sizeOf(XConnectSetup)]);
 
     fbs = std.io.fixedBufferStream(&buffer);
     var dser = std.io.deserializer(.Little, .Byte, fbs.reader());
     const reply = try dser.deserialize(XConnectReply);
     const setup = try dser.deserialize(XConnectSetup);
+    var memory = try std.heap.page_allocator.alloc(u8, reply.length * 4);
+    fbs = std.io.fixedBufferStream(memory);
+    const rest = try sock.read(memory);
+    dser = std.io.deserializer(.Little, .Byte, fbs.reader());
 
     std.debug.print(
         \\
@@ -144,8 +157,6 @@ test "" {
         \\display  : {}
         \\name     : {}
         \\data     : {x}
-        \\sending
-        \\response : {x}
         \\reply    : {}
         \\setup    : {}
         \\
@@ -154,10 +165,60 @@ test "" {
         display,
         name,
         data,
-        buffer[0..len],
         reply,
         setup,
     });
 
-    var length = reply.length * 4;
+    //for (buffer[0..len]) |byte| std.debug.print("0x{x:0>2}, ", .{byte});
+    //for (memory[0..rest]) |byte| std.debug.print("0x{x:0>2}, ", .{byte});
+
+    try std.json.stringify(header, .{ .whitespace = .{} }, fbs.writer());
+    std.debug.print("\n\n\n\n{}\n", .{fbs.getWritten()});
+}
+
+test "parse-setup-response" {
+    var fbs = std.io.fixedBufferStream(&@import("x_data.zig").setup_response);
+    const reader = fbs.reader();
+    var ser = std.io.deserializer(.Little, .Byte, reader);
+    const reply = try ser.deserialize(XConnectReply);
+    const setup = try ser.deserialize(XConnectSetup);
+    std.debug.print(
+        \\
+        \\
+        \\reply: {}
+        \\setup: {}
+        \\
+    , .{ reply, setup });
+    try reader.skipBytes(setup.vendor_length, .{});
+    var i: usize = 0;
+    while (i < setup.formats) : (i += 1) {
+        std.debug.print(
+            \\pixmap {: <3}| {}
+            \\
+        , .{ i, try ser.deserialize(XPixmapFormat) });
+    }
+    i = 0;
+    while (i < setup.roots) : (i += 1) {
+        const root = try ser.deserialize(XRootWindow);
+        std.debug.print(
+            \\root   {: <3}| {}
+            \\
+        , .{ i, root });
+        var j: usize = 0;
+        while (j < root.depths) : (j += 1) {
+            const depth = try ser.deserialize(XDepth);
+            var k: usize = 0;
+            std.debug.print(
+                \\depth  {: <3}| {}
+                \\
+            , .{ j, depth });
+            while (k < depth.visuals) : (k += 1) {
+                std.debug.print(
+                    \\visual {: <3}| {}
+                    \\
+                , .{ k, try ser.deserialize(XVisual) });
+            }
+        }
+    }
+    i = 0;
 }
