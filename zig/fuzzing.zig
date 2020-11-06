@@ -87,7 +87,7 @@ fn fill(comptime T: type, rng: *Random, r: *T) void {
     }
 }
 
-pub fn fuzz(
+pub fn fuzzWith(
     rng: *Random,
     function: anytype,
     arguments: anytype,
@@ -114,7 +114,15 @@ pub fn fuzz(
     try predicate(result, context, r);
 }
 
-pub fn default(
+fn tryFn(value: anytype) !void {
+    _ = try value;
+}
+
+pub fn fuzz(rng: *Random, function: anytype, arguments: anytype) !void {
+    try fuzzWith(rng, function, arguments, .{}, tryFn);
+}
+
+pub fn defaultWith(
     rounds: usize,
     function: anytype,
     arguments: anytype,
@@ -128,7 +136,11 @@ pub fn default(
     var rng = r.random;
 
     var i: usize = 0;
-    while (i < rounds) : (i += 1) try fuzz(&rng, function, arguments, context, predicate);
+    while (i < rounds) : (i += 1) try fuzzWith(&rng, function, arguments, context, predicate);
+}
+
+pub fn default(rounds: usize, function: anytype, arguments: anytype) !void {
+    try defaultWith(rounds, function, arguments, .{}, tryFn);
 }
 
 test "" {
@@ -158,7 +170,7 @@ test "" {
         }
     };
     var buffer: [256]u8 = undefined;
-    try fuzz(&rng, example.foo, .{ .@"0" = @as([]u8, &buffer) }, .{}, (struct {
+    try fuzzWith(&rng, example.foo, .{ .@"0" = @as([]u8, &buffer) }, .{}, (struct {
         pub fn f(result: anytype, context: anytype, arguments: anytype) !void {
             std.debug.print("{} {} {}\n", .{ result, context, arguments });
         }
