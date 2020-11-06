@@ -114,6 +114,23 @@ pub fn fuzz(
     try predicate(result, context, r);
 }
 
+pub fn default(
+    rounds: usize,
+    function: anytype,
+    arguments: anytype,
+    context: anytype,
+    predicate: anytype,
+) !void {
+    var buf: [8]u8 = undefined;
+    try std.crypto.randomBytes(buf[0..]);
+    const seed = std.mem.readIntLittle(u64, buf[0..8]);
+    var r = std.rand.DefaultPrng.init(seed);
+    var rng = r.random;
+
+    var i: usize = 0;
+    while (i < rounds) : (i += 1) try fuzz(&rng, function, arguments, context, predicate);
+}
+
 test "" {
     var buf: [8]u8 = undefined;
     try std.crypto.randomBytes(buf[0..]);
