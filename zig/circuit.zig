@@ -1,22 +1,22 @@
 const std = @import("std");
 const testing = std.testing;
 
-pub const Ctx = struct {
+pub const Wire = struct {
     node: *Node,
 
-    pub fn connect(self: Ctx, node: Ctx) !void {
+    pub fn connect(self: Wire, node: Wire) !void {
         try self.node.inputs.append(node);
     }
 
-    pub fn high(self: Ctx) void {
+    pub fn high(self: Wire) void {
         self.node.outbox = true;
     }
 
-    pub fn low(self: Ctx) void {
+    pub fn low(self: Wire) void {
         self.node.outbox = false;
     }
 
-    pub fn sample(self: Ctx) bool {
+    pub fn sample(self: Wire) bool {
         return self.node.outbox;
     }
 };
@@ -27,9 +27,9 @@ pub const Node = struct {
     inputs: Edges,
 
     // private, don't mess with it
-    updateFn: fn ([]Ctx) bool,
+    updateFn: fn ([]Wire) bool,
 
-    pub const Edges = std.ArrayList(Ctx);
+    pub const Edges = std.ArrayList(Wire);
 
     pub fn pulse(self: *Node) void {
         if (self.inputs.items.len != 0) {
@@ -44,45 +44,45 @@ const Circuit = struct {
 
     pub const Graph = std.ArrayList(Node);
 
-    pub fn new(self: *Circuit, update: fn ([]Ctx) bool) !Ctx {
+    pub fn new(self: *Circuit, update: fn ([]Wire) bool) !Wire {
         try self.graph.append(Node{
             .updateFn = update,
             .inputs = Node.Edges.init(self.graph.allocator),
         });
         defer self.count += 1;
-        return Ctx{ .node = &self.graph.items[self.count] };
+        return Wire{ .node = &self.graph.items[self.count] };
     }
 
-    pub fn wire(self: *Circuit) !Ctx {
+    pub fn wire(self: *Circuit) !Wire {
         return try self.new((struct {
-            pub fn update(inputs: []Ctx) bool {
+            pub fn update(inputs: []Wire) bool {
                 for (inputs) |w| if (w.sample()) return true;
                 return false;
             }
         }).update);
     }
 
-    pub fn xorGate(self: *Circuit) !Ctx {
+    pub fn xorGate(self: *Circuit) !Wire {
         return try self.new((struct {
-            pub fn update(inputs: []Ctx) bool {
+            pub fn update(inputs: []Wire) bool {
                 for (inputs) |w| if (w.sample()) return true;
                 return false;
             }
         }).update);
     }
 
-    pub fn andGate(self: *Circuit) !Ctx {
+    pub fn andGate(self: *Circuit) !Wire {
         return try self.new((struct {
-            pub fn update(inputs: []Ctx) bool {
+            pub fn update(inputs: []Wire) bool {
                 for (inputs) |w| if (!w.sample()) return false;
                 return true;
             }
         }).update);
     }
 
-    pub fn inverter(self: *Circuit) !Ctx {
+    pub fn inverter(self: *Circuit) !Wire {
         return try self.new((struct {
-            pub fn update(inputs: []Ctx) bool {
+            pub fn update(inputs: []Wire) bool {
                 var highs: usize = 0;
                 for (inputs) |w| if (w.sample()) highs += 1;
                 return highs < inputs.len;
@@ -109,10 +109,10 @@ test "smoke" {
 }
 
 const Spi = struct {
-    sclk: Ctx,
-    mosi: Ctx,
-    miso: Ctx,
-    ss: Ctx,
+    sclk: Wire,
+    mosi: Wire,
+    miso: Wire,
+    ss: Wire,
 
     buffer: u8 = 0,
     index: u3 = 0,
@@ -140,3 +140,38 @@ test "spi" {
     var slave = try Spi.init(&circuit);
     try master.connect(slave);
 }
+
+const I2C = struct {
+    sda: Wire,
+    scl: Wire,
+
+    pub fn connect(self: *I2C, other: I2C) !void {
+        try self.sda.connect(other.sda);
+        try self.scl.connect(other.scl);
+    }
+};
+
+const PineTime = struct {
+    pub const Display = struct {
+        spi: Spi,
+
+        pub fn init(circuit: *Circuit) !Display {
+            return Display{ .spi = spi.init(&circuit) };
+        }
+    };
+
+    pub const Accelerometer = struct {
+        // 0x18
+        i2c: I2C,
+    };
+
+    pub const HeartRateSensor = struct {
+        // 0x44
+        i2c: I2C,
+    };
+
+    pub const TouchController = struct {
+        // 0x15
+        i2c: I2C,
+    };
+};
