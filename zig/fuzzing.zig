@@ -114,7 +114,7 @@ pub fn fuzzWith(
     try predicate(result, context, r);
 }
 
-fn tryFn(value: anytype) !void {
+fn tryFn(value: anytype, _: anytype, __: anytype) !void {
     _ = try value;
 }
 
