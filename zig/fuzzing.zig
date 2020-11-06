@@ -1,6 +1,5 @@
 //! copyright (c) 2020 Simon A. Nielsen Knights <tauoverpi@yandex.com>
 //! license: MIT
-
 const std = @import("std");
 const Random = std.rand.Random;
 const TypeInfo = std.builtin.TypeInfo;
@@ -17,7 +16,7 @@ fn Arguments(comptime T: type) type {
                     .field_type = typ,
                     .default_value = null,
                     .is_comptime = false,
-                    .alignment = if (typ == void) 0 else @alignOf(typ),
+                    .alignment = 1,
                 }};
             } else @compileError("argument type required");
         }
@@ -34,8 +33,10 @@ fn fill(comptime T: type, rng: *Random, r: *T) void {
         .Bool => r.* = rng.int(u1) == 1,
         .Void => r.* = {},
         .Float => r.* = rng.float(T),
-        .Optional => |info| if (rng.int(u1)) {
-            fill(info.child, rng, r);
+        .Optional => |info| if (rng.int(u1) == 1) {
+            var tmp: info.child = undefined;
+            fill(info.child, rng, &tmp);
+            r.* = tmp;
         } else {
             r.* = null;
         },
@@ -78,7 +79,9 @@ fn fill(comptime T: type, rng: *Random, r: *T) void {
             };
         },
         .Struct => |info| inline for (info.fields) |field| {
-            fill(field.field_type, rng, &@field(r, field.name));
+            var tmp: field.field_type = undefined;
+            fill(field.field_type, rng, &tmp);
+            @field(r, field.name) = tmp;
         },
         else => @compileError("unable to fuzz type " ++ @typeName(T)),
     }
