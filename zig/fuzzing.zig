@@ -26,26 +26,35 @@ fn Arguments(comptime T: type) type {
     }
 }
 
-fn fill(comptime T: type, rng: *Random, r: *T) void {
+/// Fills a variable with random data based on the inhabitants of the type.
+/// Types may implement a custom fill routine with a function names
+/// `fuzzFill` in the form of:
+/// ```
+/// pub fn fuzzFill(result: *?, rng: *Random, context: anytype) !void
+/// ```
+/// which will be called when `fill` is used on that type.
+pub fn fill(comptime T: type, rng: *Random, ctx: anytype, r: *T) void {
     var i: usize = 0;
-    switch (@typeInfo(T)) {
+    if (comptime std.meta.trait.isContainer(T) and @hasDecl(T, "fuzzFill")) {
+        T.fuzzFill(r, rng, ctx);
+    } else switch (@typeInfo(T)) {
         .Int => r.* = rng.int(T),
         .Bool => r.* = rng.int(u1) == 1,
         .Void => r.* = {},
         .Float => r.* = rng.float(T),
         .Optional => |info| if (rng.int(u1) == 1) {
             var tmp: info.child = undefined;
-            fill(info.child, rng, &tmp);
+            fill(info.child, rng, ctx, &tmp);
             r.* = tmp;
         } else {
             r.* = null;
         },
         .Array => |info| {
-            while (i < info.len) : (i += 1) fill(info.child, rng, &r[i]);
+            while (i < info.len) : (i += 1) fill(info.child, rng, ctx, &r[i]);
         },
         .Vector => |info| {
             var vec: [info.len]info.child = undefined;
-            while (i < info.len) : (i += 1) fill(info.child, rng, &vec[i]);
+            while (i < info.len) : (i += 1) fill(info.child, rng, ctx, &vec[i]);
             r.* = vec;
         },
         .ErrorSet => |info| if (info) |set| {
@@ -55,10 +64,10 @@ fn fill(comptime T: type, rng: *Random, r: *T) void {
             };
         },
         .Pointer => |info| switch (info.size) {
-            .One => fill(info.child, rng, r.*),
+            .One => fill(info.child, rng, ctx, r.*),
             .Slice => while (i < r.*.len) : (i += 1) {
                 var tmp: info.child = undefined;
-                fill(info.child, rng, &tmp);
+                fill(info.child, rng, ctx, &tmp);
                 r.*[i] = tmp;
             },
             .Many => @compileError("many pointers not fuzzable"),
@@ -74,19 +83,23 @@ fn fill(comptime T: type, rng: *Random, r: *T) void {
             const chosen = rng.intRangeAtMost(usize, 0, info.fields.len - 1);
             inline for (info.fields) |field, n| if (n == chosen) {
                 var inside: field.field_type = undefined;
-                fill(field.field_type, rng, &inside);
+                fill(field.field_type, rng, ctx, &inside);
                 r.* = @unionInit(T, field.name, inside);
             };
         },
         .Struct => |info| inline for (info.fields) |field| {
             var tmp: field.field_type = undefined;
-            fill(field.field_type, rng, &tmp);
+            fill(field.field_type, rng, ctx, &tmp);
             @field(r, field.name) = tmp;
         },
         else => @compileError("unable to fuzz type " ++ @typeName(T)),
     }
 }
 
+/// Run a single fuzz test with a user given predicate of the form:
+/// ```
+/// pub fn predicate(result: anytype, context: anytype, arguments: anytype) !void
+/// ```
 pub fn fuzzWith(
     rng: *Random,
     function: anytype,
@@ -103,12 +116,12 @@ pub fn fuzzWith(
                 comptime !std.meta.trait.isConstPtr(field.field_type))
             {
                 @field(r, field.name) = @field(arguments, field.name);
-                fill(std.meta.fields(A)[i].field_type, rng, &@field(r, field.name));
+                fill(std.meta.fields(A)[i].field_type, rng, context, &@field(r, field.name));
             }
             @field(r, field.name) = @field(arguments, field.name);
         } else if (comptime std.meta.trait.is(.Pointer)(field.field_type)) {
             @compileError("pointers must be passed as explicit arguments");
-        } else fill(field.field_type, rng, &@field(r, field.name));
+        } else fill(field.field_type, rng, context, &@field(r, field.name));
     }
     const result = @call(.{}, function, r);
     try predicate(result, context, r);
@@ -118,10 +131,15 @@ fn tryFn(value: anytype, _: anytype, __: anytype) !void {
     _ = try value;
 }
 
+/// Run a single fuzz test checking for illegal behaviour and error values
 pub fn fuzz(rng: *Random, function: anytype, arguments: anytype) !void {
     try fuzzWith(rng, function, arguments, .{}, tryFn);
 }
 
+/// Run a given number of iterations of fuzz tests with a user given predicate of the form:
+/// ```
+/// pub fn predicate(result: anytype, context: anytype, arguments: anytype) !void
+///
 pub fn defaultWith(
     rounds: usize,
     function: anytype,
@@ -139,6 +157,7 @@ pub fn defaultWith(
     while (i < rounds) : (i += 1) try fuzzWith(&rng, function, arguments, context, predicate);
 }
 
+/// Run a given number of iterations of fuzz tests checking for illegal behaviour and error values
 pub fn default(rounds: usize, function: anytype, arguments: anytype) !void {
     try defaultWith(rounds, function, arguments, .{}, tryFn);
 }
