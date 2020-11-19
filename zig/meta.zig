@@ -17,7 +17,7 @@ fn unionFromStruct(comptime T: type) type {
             }};
             tags = tags ++ &[_]EnumField{.{ .name = field.name, .value = i }};
         }
-        const bits = @clz(u128, std.math.ceilPowerOfTwoPromote(u128, tags.len));
+        const bits = @ctz(u128, std.math.ceilPowerOfTwoPromote(u128, tags.len));
         const enum_type = @Type(TypeInfo{
             .Enum = .{
                 .layout = .Auto,
