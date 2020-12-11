@@ -6,7 +6,7 @@ const parse = std.json.parse;
 const TokenStream = std.json.TokenStream;
 const ArrayList = std.ArrayList;
 
-const http_header = "HTTP/2 200 OK\r\n" ++ "Server: recovery\r\n";
+const http_header = "HTTP/2 200 OK\r\nServer: recovery\r\n";
 const text_html = "Content-Type: text/html\r\n";
 const application_octet_stream = "Content-Type: application/octet-stream\r\n";
 const application_json = "Content-Type: application/json\r\n";
@@ -70,6 +70,7 @@ pub fn main() !void {
             TCP => {
                 const fd = try os.accept(tcp, null, null, os.SOCK_CLOEXEC);
                 defer os.shutdown(fd, .both) catch os.exit(2);
+                defer os.close(fd);
                 const res = inbox[0..try os.recv(fd, &inbox, os.MSG_CMSG_CLOEXEC)];
 
                 try stderr.print("{e}\n", .{res});
