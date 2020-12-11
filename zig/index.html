@@ -1,0 +1,18 @@
+<!DOCTYPE html5>
+<html>
+  <head>
+    <title>recovery</title>
+  </head>
+  <body>
+    <script>
+      const thing = () => {
+        fetch("/", {
+          method: "POST",
+          body: '{"jsonrpc":"2.0","method":"ping"}'
+        }).then(response => response.json())
+          .then(_ => window.setTimeout(thing, 3000));
+      };
+      thing();
+    </script>
+  </body>
+</html>
