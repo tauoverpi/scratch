@@ -61,16 +61,9 @@ fn Epoll(comptime T: type) type {
             try os.epoll_ctl(self.fd, os.EPOLL_CTL_DEL, fd, null);
         }
 
-        pub const Events = struct {
-            in: bool,
-            out: bool,
-            err: bool,
-            rdhup: bool,
-            pri: bool,
-            hup: bool,
+        const Pair = struct {
+            in: bool, out: bool, err: bool, rdhup: bool, pri: bool, hup: bool, data: T
         };
-
-        const Pair = struct { events: Events, data: T };
 
         pub fn wait(self: *Self) ?Pair {
             while (true) {
@@ -80,17 +73,15 @@ fn Epoll(comptime T: type) type {
                 } else {
                     self.index -= 1;
                     const e = self.buffer[self.index].events;
-                    var event: Events = undefined;
+                    var event: Pair = undefined;
                     event.in = os.EPOLLIN & e > 0;
                     event.out = os.EPOLLOUT & e > 0;
                     event.pri = os.EPOLLPRI & e > 0;
                     event.err = os.EPOLLERR & e > 0;
                     event.rdhup = os.EPOLLRDHUP & e > 0;
                     event.hup = os.EPOLLHUP & e > 0;
-                    return Pair{
-                        .events = event,
-                        .data = unpack(T, self.buffer[self.index].data.u64),
-                    };
+                    event.data = unpack(T, self.buffer[self.index].data.u64);
+                    return event;
                 }
             }
         }
