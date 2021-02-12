@@ -226,21 +226,40 @@ test "pack unpack" {
 }
 
 const Event = union(enum) {
-    stdin,
+    stdin: struct {
+        position: u16,
+        mode: enum { insert, visual, normal, replac },
+    },
     net: os.fd_t,
 };
 
 pub fn main() !void {
     const stdin = std.io.getStdIn();
+
+    const old = try os.tcgetattr(stdin.handle);
+    var new = old;
+
+    new.iflag &= ~@as(u32, os.BRKINT | os.ICRNL | os.INPCK | os.ISTRIP | os.IXON);
+    new.oflag &= ~@as(u32, os.OPOST);
+    new.cflag &= os.CS8;
+    new.lflag &= ~@as(u32, os.ECHO | os.ICANON | os.IEXTEN | os.ISIG);
+    new.cc[os.VMIN] = 0;
+    new.cc[os.VTIME] = 0;
+    try os.tcsetattr(stdin.handle, .NOW, new);
+    defer os.tcsetattr(stdin.handle, .NOW, old) catch unreachable;
+
     var epoll = Epoll(Event){ .fd = try os.epoll_create1(os.EPOLL_CLOEXEC) };
-    try epoll.add(.stdin, stdin.handle, .{ .in = true, .et = true });
+    try epoll.add(.{ .stdin = .{ .position = 0, .mode = .insert } }, stdin.handle, .{ .in = true, .et = true, .oneshot = true });
+
     while (epoll.wait()) |event| switch (event.data) {
-        .stdin => {
+        .stdin => |ctx| {
             const reader = stdin.reader();
             const writer = stdin.writer();
             var tmp: [1024 * 64]u8 = undefined;
             const line = tmp[0..try reader.read(&tmp)];
-            try writer.writeAll(line);
+            if (mem.eql(u8, "q", line)) break;
+            try writer.print("pressed: {s} {}\r\n", .{ line, ctx });
+            try epoll.mod(.{ .stdin = .{ .position = ctx.position + 1, .mode = .insert } }, stdin.handle, .{ .in = true, .et = true, .oneshot = true });
         },
         .net => |fd| {},
     };
