@@ -2,9 +2,20 @@ const std = @import("std");
 const TypeInfo = std.builtin.TypeInfo;
 const meta = std.meta;
 const math = std.math;
+const mem = std.mem;
+const testing = std.testing;
+const assert = std.debug.assert;
+const Allocator = std.mem.Allocator;
 
-pub fn EntityStore(comptime T: type) type {
+pub const EntityStoreType = union(enum) {
+    dynamic,
+    static: usize,
+    // TODO: slice
+};
+
+pub fn EntityStore(options: EntityStoreType, comptime T: type) type {
     const info = @typeInfo(T).Struct;
+    const static: ?usize = if (options == .static) options.static else null;
 
     var entity_fields: [info.fields.len]TypeInfo.StructField = undefined;
     var used_fields: u16 = 0;
@@ -14,7 +25,7 @@ pub fn EntityStore(comptime T: type) type {
             entity_fields[used_fields] = .{
                 .is_comptime = false,
                 .name = field.name,
-                .field_type = []field.field_type,
+                .field_type = if (static) |size| [size]field.field_type else []field.field_type,
                 .alignment = 0,
                 .default_value = null,
             };
@@ -23,10 +34,12 @@ pub fn EntityStore(comptime T: type) type {
     }
 
     return struct {
-        entities: Entities,
-        memory: [*]u8 = undefined,
-        tags: []Tags,
-        generations: []u16,
+        entities: Entities = undefined,
+        allocator: if (options == .dynamic) *Allocator else void,
+        tags: if (static) |size| [size]Tag else []Tag = undefined,
+        generations: if (static) |size| [size]Gen else []Gen = undefined,
+        stack: if (static) |size| [size]u16 else []u16 = undefined,
+        index: usize = 0,
 
         pub const Entities = @Type(.{
             .Struct = .{
@@ -38,21 +51,79 @@ pub fn EntityStore(comptime T: type) type {
         });
 
         pub const Fields = meta.FieldEnum(Entities);
-        pub const FlagEnum = meta.FieldEnum(T);
+        pub const TagEnum = meta.FieldEnum(T);
         pub const Entity = extern struct {
             token: u16,
-            generation: u16,
+            generation: Gen,
         };
 
         pub const Self = @This();
 
-        pub const Tags = meta.Int(.unsigned, entity_fields.len);
+        pub const Gen = u16;
+        pub const Tag = meta.Int(.unsigned, math.ceilPowerOfTwoAssert(usize, entity_fields.len + 1));
+        pub const dead_bit = @as(Tag, 1) << entity_fields.len;
 
-        pub fn init(bytes: []u8) Self {}
+        pub usingnamespace switch (options) {
+            .static => struct {
+                pub fn init() Self {
+                    var self: Self = undefined;
+                    self.reset();
+                    return self;
+                }
+            },
+            .dynamic => struct {
+                pub fn init(allocator: *Allocator, capacity: usize) !Self {
+                    @panic("TODO");
+                }
+            },
+        };
 
-        pub fn set(self: *Self, entity: Entity, comptime flags: anytype) void {}
+        pub fn create(self: *Self) !Entity {
+            if (self.index == 0) return error.OutOfMemory;
+            self.index -= 1;
+            const token = self.stack[self.index];
+            self.generations[token] += 1;
+            self.tags[token] = 0;
+            return Entity{ .token = token, .generation = self.generations[token] };
+        }
+
+        pub fn destroy(self: *Self, entity: Entity) void {
+            assert(entity.generation == self.generations[entity.token]);
+            assert(self.index != self.stack.len);
+            self.tags[entity.token] = dead_bit;
+            self.stack[self.index] = entity.token;
+            self.index += 1;
+        }
+
+        pub fn reset(self: *Self) void {
+            mem.set(Tag, self.tags[0..self.tags.len], dead_bit);
+            mem.set(Gen, self.generations[0..self.generations.len], 0);
+            for (self.stack) |*n, i| n.* = @intCast(u16, i);
+            self.index = self.stack.len;
+        }
+
+        pub fn mark(self: *Self, entity: Entity, comptime tags: anytype) void {
+            assert(entity.generation == self.generations[entity.token]);
+            comptime var tag: Tag = 0;
+            comptime for (meta.fields(@TypeOf(tags))) |field| {
+                const offset = @enumToInt(@field(TagEnum, @tagName(@field(tags, field.name))));
+                tag |= @as(Tag, 1) << offset;
+            };
+            self.tags[entity.token] |= tag;
+        }
+
+        pub fn unmark(self: *Self, entity: Entity, comptime tags: anytype) void {
+            assert(entity.generation == self.generations[entity.token]);
+            comptime var tag: Tag = 0;
+            comptime for (meta.fields(@TypeOf(tags))) |field| {
+                const offset = @enumToInt(@field(TagEnum, @tagName(@field(tags, field.name))));
+                tag |= @as(Tag, 1) << offset;
+            };
+            self.tags[entity.token] &= ~tag;
+        }
 
         pub fn update(self: *Self, entity: Entity, fields: anytype) void {
+            assert(entity.generation == self.generations[entity.token]);
             inline for (meta.fields(@TypeOf(fields))) |field| {
                 @field(self.entities, field.name)[entity.token] = @field(fields, field.name);
             }
@@ -60,69 +131,115 @@ pub fn EntityStore(comptime T: type) type {
 
         const Sub = enum { none, ptr, slice };
         fn SubtypeWith(comptime mod: Sub, comptime fset: anytype) type {
-            const args = meta.fields(@TypeOf(fset));
-            var fields: [args.len]TypeInfo.StructField = undefined;
-            for (args) |field, i| {
-                const name: []const u8 = @tagName(@field(fset, field.name));
-                const typ = meta.fieldInfo(T, @field(fset, field.name)).field_type;
-                const given = switch (mod) {
-                    .ptr => *typ,
-                    .none => typ,
-                    .slice => []typ,
-                };
-                fields[i] = .{
-                    .name = name,
-                    .field_type = given,
-                    .alignment = @alignOf(given),
-                    .is_comptime = false,
-                    .default_value = null,
-                };
-            }
+            if (comptime meta.trait.isContainer(@TypeOf(fset))) {
+                const args = meta.fields(@TypeOf(fset));
+                var fields: [args.len]TypeInfo.StructField = undefined;
+                for (args) |field, i| {
+                    const name: []const u8 = @tagName(@field(fset, field.name));
+                    const there = meta.fieldInfo(T, @field(fset, field.name)).field_type;
+                    const typ = if (there == void) bool else there;
+                    const given = switch (mod) {
+                        .ptr => *typ,
+                        .none => typ,
+                        .slice => []typ,
+                    };
+                    fields[i] = .{
+                        .name = name,
+                        .field_type = if (there == void) typ else given,
+                        .alignment = @alignOf(given),
+                        .is_comptime = false,
+                        .default_value = null,
+                    };
+                }
 
-            return @Type(.{
-                .Struct = .{
-                    .layout = info.layout,
-                    .fields = &fields,
-                    .decls = &.{},
-                    .is_tuple = false,
-                },
-            });
+                return @Type(.{
+                    .Struct = .{
+                        .layout = info.layout,
+                        .fields = &fields,
+                        .decls = &.{},
+                        .is_tuple = false,
+                    },
+                });
+            } else {
+                const typ = meta.fieldInfo(T, fset).field_type;
+                switch (mod) {
+                    .ptr => return *typ,
+                    .none => return typ,
+                    .slice => return []typ,
+                }
+            }
         }
 
         pub fn get(self: *Self, entity: Entity, comptime fields: anytype) SubtypeWith(.none, fields) {
-            const FT = SubtypeWith(.none, fields);
-            var ft: FT = undefined;
-            inline for (fields) |field| {
-                @field(ft, @tagName(field)) = @field(self.entities, @tagName(field))[entity.token];
-            }
-            return ft;
+            assert(entity.generation == self.generations[entity.token]);
+            if (comptime meta.trait.isContainer(@TypeOf(fields))) {
+                const FT = SubtypeWith(.none, fields);
+                var ft: FT = undefined;
+                inline for (meta.fields(FT)) |field| {
+                    if (!@hasField(Entities, field.name) and @hasField(T, field.name)) {
+                        const offset = @enumToInt(@field(TagEnum, field.name));
+                        @field(ft, field.name) = self.tags[entity.token] & (@as(Tag, 1) << offset) != 0;
+                    } else {
+                        @field(ft, field.name) = @field(self.entities, field.name)[entity.token];
+                    }
+                }
+                return ft;
+            } else return @field(self.entities, @tagName(fields))[entity.token];
         }
 
         pub fn at(self: *Self, entity: Entity, comptime fields: anytype) SubtypeWith(.ptr, fields) {
-            const FT = SubtypeWith(.ptr, fields);
-            var ft: FT = undefined;
-            inline for (fields) |field| {
-                @field(ft, @tagName(field)) = &@field(self.entities, @tagName(field))[entity.token];
-            }
-            return ft;
+            assert(entity.generation == self.generations[entity.token]);
+            if (comptime meta.trait.isContainer(@TypeOf(fields))) {
+                const FT = SubtypeWith(.ptr, fields);
+                var ft: FT = undefined;
+                inline for (meta.fields(FT)) |field| {
+                    if (!@hasField(Entities, field.name) and @hasField(T, field.name)) {
+                        const offset = @enumToInt(@field(TagEnum, field.name));
+                        @field(ft, field.name) = self.tags[entity.token] & (@as(Tag, 1) << offset) != 0;
+                    } else {
+                        @field(ft, field.name) = &@field(self.entities, field.name)[entity.token];
+                    }
+                }
+                return ft;
+            } else return &@field(self.entities, @tagName(fields))[entity.token];
         }
 
         pub fn iterator(self: *Self, comptime filter: Iterator.Filter) Iterator {
-            comptime var tags: Tags = 0;
+            comptime var match: Tag = 0;
+            comptime var ignore: Tag = 0;
             comptime for (meta.fields(Iterator.Filter)) |field| {
-                const offset = @enumToInt(@field(FlagEnum, field.name));
-                tags |= @as(Tags, 1) << offset;
+                const offset = @enumToInt(@field(TagEnum, field.name));
+                switch (@field(filter, field.name)) {
+                    .match => match |= @as(Tag, 1) << offset,
+                    .ignore => ignore |= @as(Tag, 1) << offset,
+                    else => {},
+                }
             };
 
-            return .{ .self = self, .tags = tags };
+            return .{ .self = self, .match = match, .ignore = ignore | dead_bit };
         }
 
         pub const Iterator = struct {
             self: *Self,
-            tags: Tags,
+            match: Tag,
+            ignore: Tag,
             index: usize = 0,
 
-            const Config = enum { ignore, match, filter };
+            const Config = enum { ignore, match, none };
+
+            pub fn next(it: *Iterator) ?Entity {
+                while (it.index < it.self.tags.len) {
+                    defer it.index += 1;
+                    const tags = it.self.tags[it.index];
+                    if (it.ignore & tags == 0 and it.match & tags == it.match) {
+                        const gen = it.self.generations[it.index];
+                        return Entity{
+                            .token = @intCast(u16, it.index),
+                            .generation = gen,
+                        };
+                    }
+                } else return null;
+            }
 
             pub const Filter = blk: {
                 var filter_fields: [info.fields.len]TypeInfo.StructField = undefined;
@@ -132,9 +249,10 @@ pub fn EntityStore(comptime T: type) type {
                         .field_type = Config,
                         .alignment = @alignOf(Config),
                         .is_comptime = false,
-                        .default_value = Config.ignore,
+                        .default_value = Config.none,
                     };
                 }
+
                 break :blk @Type(.{
                     .Struct = .{
                         .layout = .Auto,
@@ -149,7 +267,7 @@ pub fn EntityStore(comptime T: type) type {
 }
 
 test "" {
-    const T = EntityStore(struct {
+    const T = EntityStore(.{ .static = 256 }, struct {
         int: i32,
         uint: u32,
         flag: void,
@@ -161,11 +279,57 @@ test "" {
     });
 
     var int: [256]i32 = undefined;
+    var gen: [256]u16 = undefined;
+    var tag: [256]T.Tag = undefined;
+    var uint: [256]u32 = undefined;
+    var stack: [256]u16 = undefined;
 
     var t: T = undefined;
-    t.entities.int = &int;
-    const at = t.at(T.Entity{ .token = 0, .generation = 0 }, .{ .int, .uint, .sum, .slice });
-    //const get = t.get(T.Entity{ .token = 0, .generation = 0 }, .{.int});
+
+    t.reset();
+
+    const ent = try t.create();
+
+    const at = t.at(ent, .{ .int, .uint });
+    at.int.* = 1;
+    at.uint.* = 2;
+    testing.expectEqual(@as(i32, 1), t.get(ent, .{ .int, .flag }).int);
+
+    t.update(ent, .{ .int = 2 });
+    testing.expectEqual(@as(i32, 2), t.get(ent, .int));
+
     var it = t.iterator(.{ .int = .match });
-    //while (it.next()) |_| {}
+    testing.expectEqual(@as(?T.Entity, null), it.next());
+
+    t.mark(ent, .{.int});
+
+    it = t.iterator(.{ .int = .match });
+
+    testing.expectEqual(@as(?T.Entity, ent), it.next());
+    testing.expectEqual(@as(?T.Entity, null), it.next());
+    testing.expectEqual(@as(?T.Entity, null), it.next());
+
+    it = t.iterator(.{ .int = .match });
+    t.unmark(ent, .{.int});
+    testing.expectEqual(@as(?T.Entity, null), it.next());
+
+    it = t.iterator(.{ .int = .match });
+    t.mark(ent, .{.int});
+    testing.expectEqual(@as(?T.Entity, ent), it.next());
+
+    t.destroy(ent);
+    it = t.iterator(.{ .int = .match });
+    testing.expectEqual(@as(?T.Entity, null), it.next());
+}
+
+test "" {
+    const Store = EntityStore(.{ .static = 256 }, struct {
+        position: struct { x: f32, y: f32 },
+        direction: struct { x: f32, y: f32 },
+        health: u32,
+        bullet: void,
+        enemy: void,
+    });
+
+    var store = Store.init();
 }
