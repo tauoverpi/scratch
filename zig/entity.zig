@@ -56,7 +56,7 @@ pub fn ComponentStore(comptime size: usize, comptime T: type) type {
             break :blk @Type(.{
                 .Struct = .{
                     .layout = .Auto,
-                    .fields = &fields,
+                    .fields = fields[0..used],
                     .decls = &.{},
                     .is_tuple = false,
                 },
@@ -85,6 +85,7 @@ pub fn ComponentStore(comptime size: usize, comptime T: type) type {
                     if (field.field_type == void) {
                         field.field_type = bool;
                         field.alignment = 1;
+                        field.default_value = null;
                     }
                     fields[i] = field;
                 }
@@ -106,7 +107,12 @@ pub fn ComponentStore(comptime size: usize, comptime T: type) type {
             var r: ST = undefined;
             if (comptime meta.trait.isContainer(@TypeOf(fields))) {
                 inline for (meta.fields(ST)) |field| {
-                    @field(r, field.name) = @field(self.components, field.name)[entity.token];
+                    if (!@hasField(Components, field.name) and @hasField(T, field.name)) {
+                        const bit = @as(Tag, 1) << @enumToInt(@field(TagEnum, field.name));
+                        @field(r, field.name) = self.tags[entity.token] & bit != 0;
+                    } else {
+                        @field(r, field.name) = @field(self.components, field.name)[entity.token];
+                    }
                 }
                 return r;
             } else return @field(self.components, @tagName(fields))[entity.token];
