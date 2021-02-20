@@ -10,7 +10,7 @@ pub fn ComponentStore(comptime size: usize, comptime T: type) type {
     return struct {
         components: Components = undefined,
         tags: [size]Tag = undefined,
-        stack: [size]Entity.Token = undefined,
+        stack: [size]Entity.Token,
         index: Entity.Token = size,
 
         const Self = @This();
@@ -20,7 +20,14 @@ pub fn ComponentStore(comptime size: usize, comptime T: type) type {
             math.ceilPowerOfTwoAssert(usize, math.max(8, info.fields.len + 1)),
         );
 
-        const dead_bit = @as(Tag, 1) << info.fields.len;
+        const live_bit = @as(Tag, 1) << info.fields.len;
+
+        pub fn init() Self {
+            var self: Self = .{ .stack = undefined };
+            for (&self.stack) |*n, i| n.* = @truncate(Entity.Token, i);
+            mem.set(Tag, &self.tags, 0);
+            return self;
+        }
 
         pub const Entity = extern struct {
             token: Token,
@@ -61,10 +68,12 @@ pub fn ComponentStore(comptime size: usize, comptime T: type) type {
         pub fn new(self: *Self) !Entity {
             if (self.index == 0) return error.OutOfMemory;
             self.index -= 1;
+            self.tags[self.index] = live_bit;
             return Entity{ .token = self.stack[self.index] };
         }
 
         pub fn delete(self: *Self, entity: Entity) void {
+            assert(self.tags[entity.token] & live_bit != 0);
             self.stack[self.index] = entity.token;
         }
 
@@ -92,6 +101,7 @@ pub fn ComponentStore(comptime size: usize, comptime T: type) type {
         }
 
         pub fn get(self: *Self, entity: Entity, comptime fields: anytype) Subtype(fields) {
+            assert(self.tags[entity.token] & live_bit != 0);
             const ST = Subtype(fields);
             var r: ST = undefined;
             if (comptime meta.trait.isContainer(@TypeOf(fields))) {
@@ -135,7 +145,7 @@ pub fn ComponentStore(comptime size: usize, comptime T: type) type {
                     else => {},
                 }
             };
-            return Iterator{ .self = self, .match = match, .ignore = ignore | dead_bit };
+            return Iterator{ .self = self, .match = match | live_bit, .ignore = ignore };
         }
 
         pub const Iterator = struct {
@@ -187,7 +197,7 @@ test "" {
         u: u32,
     });
 
-    var t: T = .{};
+    var t = T.init();
     const entity = try t.new();
     t.tag(entity, .{.i});
 
@@ -197,8 +207,11 @@ test "" {
 
     var it = t.iterator(.{ .i = .match });
     var l: usize = 0;
-    while (it.next()) |_| l += 1;
-    testing.expectEqual(@as(usize, l), 1);
+    while (it.next()) |e| {
+        testing.expectEqual(@as(i32, 1), t.get(e, .i));
+        l += 1;
+    }
+    testing.expectEqual(@as(usize, 1), l);
 
     t.untag(entity, .{.i});
 }
