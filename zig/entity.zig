@@ -12,6 +12,7 @@ pub fn ComponentStore(comptime size: usize, comptime T: type) type {
         tags: [size]Tag = undefined,
         stack: [size]Entity.Token,
         index: Entity.Token = size,
+        alive: Entity.Token = 0,
 
         const Self = @This();
 
@@ -24,7 +25,7 @@ pub fn ComponentStore(comptime size: usize, comptime T: type) type {
 
         pub fn init() Self {
             var self: Self = .{ .stack = undefined };
-            for (&self.stack) |*n, i| n.* = @truncate(Entity.Token, i);
+            for (&self.stack) |*n, i| n.* = @truncate(Entity.Token, (size - 1) - i);
             mem.set(Tag, &self.tags, 0);
             return self;
         }
@@ -68,13 +69,17 @@ pub fn ComponentStore(comptime size: usize, comptime T: type) type {
         pub fn new(self: *Self) !Entity {
             if (self.index == 0) return error.OutOfMemory;
             self.index -= 1;
-            self.tags[self.index] = live_bit;
-            return Entity{ .token = self.stack[self.index] };
+            const token = self.stack[self.index];
+            self.tags[token] = live_bit;
+            self.alive += 1;
+            return Entity{ .token = token };
         }
 
         pub fn delete(self: *Self, entity: Entity) void {
             assert(self.tags[entity.token] & live_bit != 0);
+            self.tags[entity.token] = 0;
             self.stack[self.index] = entity.token;
+            self.alive -= 1;
         }
 
         fn Subtype(comptime subset: anytype) type {
@@ -165,7 +170,7 @@ pub fn ComponentStore(comptime size: usize, comptime T: type) type {
                     defer it.index += 1;
                     const item = it.self.tags[it.index];
                     if (it.ignore & item == 0 and it.match & item == it.match) {
-                        return Entity{ .token = @intCast(Tag, it.index) };
+                        return Entity{ .token = @intCast(Entity.Token, it.index) };
                     }
                 } else return null;
             }
