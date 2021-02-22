@@ -25,8 +25,7 @@ pub fn ComponentStore(comptime size: usize, comptime T: type) type {
 
         pub fn init() Self {
             var self: Self = .{ .stack = undefined };
-            for (&self.stack) |*n, i| n.* = @truncate(Entity.Token, (size - 1) - i);
-            mem.set(Tag, &self.tags, 0);
+            self.reset();
             return self;
         }
 
