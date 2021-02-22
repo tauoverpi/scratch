@@ -30,6 +30,12 @@ pub fn ComponentStore(comptime size: usize, comptime T: type) type {
             return self;
         }
 
+        pub fn reset(self: *Self) void {
+            for (self.stack) |*n, i| n.* = @truncate(Entity.Token, (size - 1) - i);
+            mem.set(Tag, &self.tags, 0);
+            self.index = size;
+        }
+
         pub const Entity = extern struct {
             token: Token,
 
@@ -38,7 +44,7 @@ pub fn ComponentStore(comptime size: usize, comptime T: type) type {
 
         const TagEnum = meta.FieldEnum(T);
 
-        const Components = blk: {
+        pub const Components = blk: {
             var fields: [info.fields.len]TypeInfo.StructField = undefined;
             var used: usize = 0;
             for (info.fields) |field, i| {
@@ -225,4 +231,7 @@ test "" {
     testing.expectEqual(@as(usize, 1), l);
 
     t.untag(entity, .{.i});
+
+    while (it.next()) |e| l += 1;
+    testing.expectEqual(@as(usize, 1), l);
 }
