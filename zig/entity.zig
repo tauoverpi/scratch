@@ -5,12 +5,16 @@ const math = std.math;
 const mem = std.mem;
 const testing = std.testing;
 const assert = std.debug.assert;
+const builtin = std.builtin;
+
+const is_safe = builtin.mode == .Debug or builtin.mode == .ReleaseSafe;
 
 pub fn ComponentStore(comptime size: usize, comptime T: type) type {
     return struct {
         components: Components = undefined,
         tags: [size]Tag = undefined,
         stack: [size]Entity.Token,
+        generations: if (is_safe) [size]u32 else void = undefined,
         index: Entity.Token = size,
         alive: Entity.Token = 0,
 
@@ -29,14 +33,17 @@ pub fn ComponentStore(comptime size: usize, comptime T: type) type {
             return self;
         }
 
+        /// Reset the state of the entity store to unitialized.
         pub fn reset(self: *Self) void {
             for (self.stack) |*n, i| n.* = @truncate(Entity.Token, (size - 1) - i);
+            if (is_safe) mem.set(u32, &self.generations, 0);
             mem.set(Tag, &self.tags, 0);
             self.index = size;
         }
 
         pub const Entity = extern struct {
             token: Token,
+            generation: if (is_safe) u32 else void,
 
             pub const Token = u32;
         };
@@ -71,19 +78,23 @@ pub fn ComponentStore(comptime size: usize, comptime T: type) type {
 
         const info = @typeInfo(T).Struct;
 
+        /// Return a new entity from the store.
         pub fn new(self: *Self) !Entity {
             if (self.index == 0) return error.OutOfMemory;
             self.index -= 1;
             const token = self.stack[self.index];
             self.tags[token] = live_bit;
             self.alive += 1;
-            return Entity{ .token = token };
+            const gen = if (is_safe) self.generations[token] else {};
+            return Entity{ .token = token, .generation = gen };
         }
 
+        /// Delete an entity from the store while invalidating it's token.
         pub fn delete(self: *Self, entity: Entity) void {
             assert(self.tags[entity.token] & live_bit != 0);
             self.tags[entity.token] = 0;
             self.stack[self.index] = entity.token;
+            if (is_safe) self.generation[entity.token] += 1;
             self.alive -= 1;
         }
 
@@ -111,7 +122,10 @@ pub fn ComponentStore(comptime size: usize, comptime T: type) type {
             } else return meta.fieldInfo(T, subset).field_type;
         }
 
+        /// Get the value of one component.
+        /// Get the value of a set of components.
         pub fn get(self: *Self, entity: Entity, comptime fields: anytype) Subtype(fields) {
+            if (is_safe) assert(self.generations[entity.token] == entity.generation);
             assert(self.tags[entity.token] & live_bit != 0);
             const ST = Subtype(fields);
             var r: ST = undefined;
@@ -128,13 +142,16 @@ pub fn ComponentStore(comptime size: usize, comptime T: type) type {
             } else return @field(self.components, @tagName(fields))[entity.token];
         }
 
+        /// Set one or more components values for the given entity.
         pub fn set(self: *Self, entity: Entity, fields: anytype) void {
+            if (is_safe) assert(self.generations[entity.token] == entity.generation);
             inline for (meta.fields(@TypeOf(fields))) |field| {
                 @field(self.components, field.name)[entity.token] = @field(fields, field.name);
             }
         }
 
         pub fn tag(self: *Self, entity: Entity, comptime tags: anytype) void {
+            if (is_safe) assert(self.generations[entity.token] == entity.generation);
             comptime var subset: Tag = 0;
             comptime for (tags) |field| {
                 subset |= @as(Tag, 1) << @enumToInt(@field(TagEnum, @tagName(field)));
@@ -143,6 +160,7 @@ pub fn ComponentStore(comptime size: usize, comptime T: type) type {
         }
 
         pub fn untag(self: *Self, entity: Entity, comptime tags: anytype) void {
+            if (is_safe) assert(self.generations[entity.token] == entity.generation);
             comptime var subset: Tag = 0;
             comptime for (tags) |field| {
                 subset |= @as(Tag, 1) << @enumToInt(@field(TagEnum, @tagName(field)));
@@ -175,7 +193,8 @@ pub fn ComponentStore(comptime size: usize, comptime T: type) type {
                     defer it.index += 1;
                     const item = it.self.tags[it.index];
                     if (it.ignore & item == 0 and it.match & item == it.match) {
-                        return Entity{ .token = @intCast(Entity.Token, it.index) };
+                        const gen = if (is_safe) it.self.generations[it.index] else {};
+                        return Entity{ .token = @intCast(Entity.Token, it.index), .generation = gen };
                     }
                 } else return null;
             }
