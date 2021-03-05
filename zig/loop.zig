@@ -37,7 +37,7 @@ const Loop = struct {
         }
     }
 
-    pub fn yeild(self: *Loop) void {
+    pub fn yield(self: *Loop) void {
         self.sleep(0);
     }
 
