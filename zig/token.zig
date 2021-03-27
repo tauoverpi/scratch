@@ -307,6 +307,8 @@ test "caption" {
 const NodeList = std.MultiArrayList(Node);
 const Node = struct {
     kind: enum(u8) { file, block, placeholder },
+    // length of the block
+    len: u16,
     token: Index,
     // file: unused
     // block: index of parent file
@@ -329,6 +331,10 @@ const Parser = struct {
     index: usize,
     tokens: Tokens.Slice,
     nodes: NodeList,
+    name_map: std.StringHashMapUnmanaged(Node.Index),
+    strings: std.ArrayListUnmanaged(u8),
+
+    const log = std.log.scoped(.parser);
 
     pub fn init(allocator: *Allocator, text: []const u8) !Parser {
         var tokens = Tokens{};
@@ -349,35 +355,129 @@ const Parser = struct {
             .index = 0,
             .nodes = NodeList{},
             .allocator = allocator,
+            .name_map = std.StringHashMapUnmanaged(Node.Index){},
+            .strings = std.ArrayListUnmanaged(u8){},
         };
     }
 
-    pub fn deinit(self: *Parser) void {
-        self.tokens.deinit(self.allocator);
-        self.nodes.deinit(self.allocator);
-        self.* = undefined;
+    pub fn deinit(p: *Parser) void {
+        p.tokens.deinit(p.allocator);
+        p.nodes.deinit(p.allocator);
+        p.name_map.deinit(p.allocator);
+        p.strings.deinit(p.allocator);
+        p.* = undefined;
     }
 
-    pub fn resolve(self: *Parser) !void {
+    fn expect(p: *Parser, tag: Token.Tag) !void {
+        if (p.peek() != tag) return error.UnexpectedToken;
+        log.debug("expect  | {s}", .{@tagName(tag)});
+        p.index += 1;
+    }
+
+    fn skip(p: *Parser, tags: []Token.Tag) bool {
+        const token = p.peek();
+        for (tags) |tag| if (tag == token) {
+            log.debug("skip    | {s}", .{@tagName(token)});
+            p.index += 1;
+            return true;
+        };
+        return false;
+    }
+
+    fn get(p: *Parser, tag: Token.Tag) ![]const u8 {
+        if (p.peek() != tag) return error.UnexpectedToken;
+        log.debug("get     | {s}", .{@tagName(tag)});
+        const slice = p.getIndex(p.index);
+        p.index += 1;
+        return slice;
+    }
+
+    fn getIndex(p: *Parser, index: usize) []const u8 {
+        const starts = p.tokens.items(.start);
+        var tokenizer: Tokenizer = .{ .text = p.text, .index = starts[index] };
+        const token = tokenizer.next();
+        return p.text[token.data.start..token.data.end];
+    }
+
+    fn consume(p: *Parser) !Token.Tag {
+        const token = p.peek();
+        log.debug("consume | {s}", .{@tagName(token)});
+        p.index += 1;
+        return token;
+    }
+
+    fn peek(p: *Parser) Token.Tag {
+        const tokens = p.tokens.items(.tag);
+        return tokens[p.index];
+    }
+
+    pub fn resolve(p: *Parser) !void {
         std.testing.log_level = .debug;
-        std.debug.panic("{}", .{self.findStart().?});
+        while (p.findStartOfBlock()) |kind| {
+            switch (kind) {
+                .inline_block => |start| try p.parseInlineBlock(start),
+                .fenced_block => try p.parseFencedBlock(),
+            }
+        }
     }
 
-    fn fencedBlock(self: *Parser) !void {}
-    fn inlineBlock(self: *Parser) !void {}
+    fn parseFencedBlock(p: *Parser) !void {
+        const fence = (p.get(.fence) catch unreachable).len;
+        log.debug("<< fenced block meta >>", .{});
 
-    fn metaBlock(self: *Parser) !void {
-        const tokens = self.tokens.items(.tag);
-        assert(tokens[self.index] == .l_brace);
+        const meta_index = try p.parseMetaBlock();
+        try p.expect(.newline);
+        log.debug("<< fenced block >>", .{});
     }
 
-    const Block = enum {
-        inline_block,
+    fn parseInlineBlock(p: *Parser, start: usize) !void {
+        p.expect(.fence) catch unreachable;
+        log.debug("<< inline block meta >>", .{});
+
+        const meta_index = try p.parseMetaBlock();
+        log.debug("<< inline block >>", .{});
+        const end = p.index;
+        defer p.index = end;
+    }
+
+    fn parseMetaBlock(p: *Parser) !void {
+        p.expect(.l_brace) catch unreachable;
+        var is_file = false;
+
+        try p.expect(.dot);
+        const language = try p.get(.identifier);
+        try p.expect(.space);
+
+        while (true) {
+            switch (try p.consume()) {
+                .identifier => {
+                    const key = p.getIndex(p.index - 1);
+                    try p.expect(.equal);
+                    const string = try p.get(.string);
+                    if (mem.eql(u8, "file", key)) {
+                        if (is_file) return error.MultipleTargets;
+                        is_file = true;
+                        // TODO
+                    }
+                },
+                .hash => {
+                    const name = try p.get(.identifier);
+                    // TODO
+                },
+                .space => {},
+                .r_brace => break,
+                else => return error.InvalidMetaBlock,
+            }
+        }
+    }
+
+    const Block = union(enum) {
+        inline_block: usize,
         fenced_block,
     };
 
     /// Find the start of a fenced or inline code block
-    fn findStart(self: *Parser) ?Block {
+    fn findStartOfBlock(self: *Parser) ?Block {
         const tokens = self.tokens.items(.tag);
         const starts = self.tokens.items(.start);
 
@@ -407,11 +507,14 @@ const Parser = struct {
                     self.index = block + 1;
                 }
             } else if (mem.indexOfScalarPos(Token.Tag, tokens[0..block], newline, .fence)) |start| {
-                // found inline block
+                // found inline block TODO: fix for `` ` ``{.zig}
 
                 if (start < block) {
+                    // by the time we've verified the current block to be inline we've also
+                    // found the start of the block thus we return the start to avoid
+                    // searcing for it again
                     self.index = block;
-                    return .inline_block;
+                    return Block{ .inline_block = start };
                 } else {
                     // not a passable codeblock, skip it and keep searching
                     self.index = block + 1;
@@ -439,6 +542,10 @@ test "parse simple" {
         \\
         \\The rest of the file isn't really interesting
         \\other than `one`{.inline #block} that shows up.
+        \\
+        \\```
+        \\this is a block the parser won't will pick up
+        \\```
     );
     defer p.deinit();
     try p.resolve();
