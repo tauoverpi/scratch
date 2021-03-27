@@ -71,18 +71,6 @@ const Tokenizer = struct {
                 .start => switch (c) {
                     // simple tokens return their result directly
 
-                    '{' => {
-                        token.tag = .l_brace;
-                        self.index += 1;
-                        break;
-                    },
-
-                    '}' => {
-                        token.tag = .r_brace;
-                        self.index += 1;
-                        break;
-                    },
-
                     '.' => {
                         token.tag = .dot;
                         self.index += 1;
@@ -130,16 +118,16 @@ const Tokenizer = struct {
                         state = .string;
                     },
 
-                    '<' => {
+                    '<', '{' => |ch| {
                         token.tag = .l_chevron;
                         state = .chevron;
-                        fence = '<';
+                        fence = ch;
                     },
 
-                    '>' => {
+                    '>', '}' => |ch| {
                         token.tag = .r_chevron;
                         state = .chevron;
-                        fence = '>';
+                        fence = ch;
                     },
 
                     // ignore anything we don't understand and pretend it's just
@@ -159,8 +147,22 @@ const Tokenizer = struct {
                     self.index += 1;
                     break;
                 } else {
-                    token.tag = .text;
-                    state = .ignore;
+                    switch (fence) {
+                        '{' => {
+                            token.tag = .l_brace;
+                            break;
+                        },
+
+                        '}' => {
+                            token.tag = .r_brace;
+                            break;
+                        },
+
+                        else => {
+                            token.tag = .text;
+                            state = .ignore;
+                        },
+                    }
                 },
 
                 .identifier => switch (c) {
@@ -197,6 +199,15 @@ const Tokenizer = struct {
         } else switch (token.tag) {
             // eof before terminating the string
             .string => token.tag = .invalid,
+
+            // handle braces at the end
+            .r_chevron => if (fence == '}') {
+                token.tag = .r_brace;
+            },
+
+            .l_chevron => if (fence == '{') {
+                token.tag = .l_brace;
+            },
             else => {},
         }
 
@@ -292,29 +303,32 @@ test "caption" {
         .identifier,
         .space,
         .identifier,
+
         .newline,
-        // newline
+
         .newline,
-        // newline
+
         .identifier,
         // The sequence which terminates the block follows.
         .newline,
-        // newline
+
         .fence,
     });
 }
 
 const NodeList = std.MultiArrayList(Node);
 const Node = struct {
-    kind: enum(u8) { file, block, placeholder },
-    // length of the block
-    len: u16,
+    tag: Tag,
     token: Index,
-    // file: unused
-    // block: index of parent file
-    // placeholder: index of parent block
-    parent: Index,
 
+    pub const Tag = enum(u8) {
+        tag,
+        filename,
+        file,
+        block,
+        inline_block,
+        placeholder,
+    };
     pub const Index = u16;
 };
 
@@ -331,8 +345,6 @@ const Parser = struct {
     index: usize,
     tokens: Tokens.Slice,
     nodes: NodeList,
-    name_map: std.StringHashMapUnmanaged(Node.Index),
-    strings: std.ArrayListUnmanaged(u8),
 
     const log = std.log.scoped(.parser);
 
@@ -355,23 +367,28 @@ const Parser = struct {
             .index = 0,
             .nodes = NodeList{},
             .allocator = allocator,
-            .name_map = std.StringHashMapUnmanaged(Node.Index){},
-            .strings = std.ArrayListUnmanaged(u8){},
         };
     }
 
     pub fn deinit(p: *Parser) void {
         p.tokens.deinit(p.allocator);
         p.nodes.deinit(p.allocator);
-        p.name_map.deinit(p.allocator);
-        p.strings.deinit(p.allocator);
         p.* = undefined;
     }
 
+    fn getToken(p: *Parser, index: usize) !Token {
+        const starts = p.tokens.items(.start);
+        var tokenizer: Tokenizer = .{ .text = p.text, .index = starts[index] };
+        return tokenizer.next();
+    }
+
     fn expect(p: *Parser, tag: Token.Tag) !void {
-        if (p.peek() != tag) return error.UnexpectedToken;
+        defer p.index += 1;
+        if (p.peek() != tag) {
+            log.debug("expected {s} found {s}", .{ @tagName(tag), @tagName(p.peek().?) });
+            return error.UnexpectedToken;
+        }
         log.debug("expect  | {s}", .{@tagName(tag)});
-        p.index += 1;
     }
 
     fn skip(p: *Parser, tags: []Token.Tag) bool {
@@ -385,90 +402,171 @@ const Parser = struct {
     }
 
     fn get(p: *Parser, tag: Token.Tag) ![]const u8 {
-        if (p.peek() != tag) return error.UnexpectedToken;
+        defer p.index += 1;
+        if (p.peek() != tag) {
+            log.debug("expected {s} found {s}", .{ @tagName(tag), @tagName(p.peek().?) });
+            return error.UnexpectedToken;
+        }
         log.debug("get     | {s}", .{@tagName(tag)});
-        const slice = p.getIndex(p.index);
-        p.index += 1;
+        const slice = p.getTokenSlice(p.index);
         return slice;
     }
 
-    fn getIndex(p: *Parser, index: usize) []const u8 {
-        const starts = p.tokens.items(.start);
-        var tokenizer: Tokenizer = .{ .text = p.text, .index = starts[index] };
-        const token = tokenizer.next();
+    fn getTokenSlice(p: *Parser, index: usize) []const u8 {
+        const token = try p.getToken(index);
         return p.text[token.data.start..token.data.end];
     }
 
     fn consume(p: *Parser) !Token.Tag {
-        const token = p.peek();
+        const token = p.peek() orelse return error.OutOfBounds;
         log.debug("consume | {s}", .{@tagName(token)});
         p.index += 1;
         return token;
     }
 
-    fn peek(p: *Parser) Token.Tag {
+    fn peek(p: *Parser) ?Token.Tag {
         const tokens = p.tokens.items(.tag);
-        return tokens[p.index];
+        return if (p.index < p.tokens.len) tokens[p.index] else null;
     }
 
     pub fn resolve(p: *Parser) !void {
         std.testing.log_level = .debug;
-        while (p.findStartOfBlock()) |kind| {
-            switch (kind) {
+        while (p.findStartOfBlock()) |tag| {
+            switch (tag) {
                 .inline_block => |start| try p.parseInlineBlock(start),
                 .fenced_block => try p.parseFencedBlock(),
             }
         }
+
+        for (p.nodes.items(.tag)) |tag| log.debug("node {s}", .{@tagName(tag)});
     }
 
     fn parseFencedBlock(p: *Parser) !void {
+        const tokens = p.tokens.items(.tag);
         const fence = (p.get(.fence) catch unreachable).len;
         log.debug("<< fenced block meta >>", .{});
 
-        const meta_index = try p.parseMetaBlock();
+        const reset = p.nodes.len;
+        errdefer p.nodes.shrinkRetainingCapacity(reset);
+
+        const filename = try p.parseMetaBlock();
         try p.expect(.newline);
-        log.debug("<< fenced block >>", .{});
+        log.debug("<< fenced block start >>", .{});
+
+        const block_start = p.index;
+
+        // find the closing fence
+        while (mem.indexOfPos(Token.Tag, tokens, p.index, &.{ .newline, .fence })) |found| {
+            if (p.getTokenSlice(found + 1).len == fence) {
+                p.index = found + 2;
+                break;
+            } else {
+                p.index = found + 2;
+            }
+        } else return error.FenceNotClosed;
+
+        const block_end = p.index - 2;
+
+        if (filename) |file| {
+            try p.nodes.append(p.allocator, .{
+                .tag = .filename,
+                .token = file,
+            });
+            try p.nodes.append(p.allocator, .{
+                .tag = .file,
+                .token = @intCast(Node.Index, block_start),
+            });
+        } else {
+            try p.nodes.append(p.allocator, .{
+                .tag = .block,
+                .token = @intCast(Node.Index, block_start),
+            });
+        }
+
+        try p.parsePlaceholders(block_start, block_end);
+
+        p.index = block_end + 2;
+
+        log.debug("<< fenced block end >>", .{});
+    }
+
+    fn parsePlaceholders(p: *Parser, start: usize, end: usize) !void {
+        const tokens = p.tokens.items(.tag);
+        p.index = start;
+        while (mem.indexOfPos(Token.Tag, tokens[0..end], p.index, &.{.l_chevron})) |found| {
+            p.index = found + 1;
+            log.debug("search  | {s}", .{@tagName(tokens[found])});
+            const name = p.get(.identifier) catch continue;
+            p.expect(.r_chevron) catch continue;
+
+            try p.nodes.append(p.allocator, .{
+                .tag = .placeholder,
+                .token = @intCast(Node.Index, found),
+            });
+        }
     }
 
     fn parseInlineBlock(p: *Parser, start: usize) !void {
+        const block_end = p.index;
         p.expect(.fence) catch unreachable;
         log.debug("<< inline block meta >>", .{});
 
-        const meta_index = try p.parseMetaBlock();
-        log.debug("<< inline block >>", .{});
+        const reset = p.nodes.len;
+        errdefer p.nodes.shrinkRetainingCapacity(reset);
+
+        if ((try p.parseMetaBlock()) != null) return error.InlineFileBlock;
+        log.debug("<< inline block start >>", .{});
+
+        try p.nodes.append(p.allocator, .{
+            .tag = .inline_block,
+            .token = @intCast(Node.Index, block_end),
+        });
+
         const end = p.index;
         defer p.index = end;
+
+        try p.parsePlaceholders(start, block_end);
+        log.debug("<< inline block end >>", .{});
     }
 
-    fn parseMetaBlock(p: *Parser) !void {
+    /// Parse the metau data block which follows a fence and
+    /// allocate nodes for each tag found.
+    fn parseMetaBlock(p: *Parser) !?Node.Index {
         p.expect(.l_brace) catch unreachable;
-        var is_file = false;
+        var file: ?Node.Index = null;
 
         try p.expect(.dot);
         const language = try p.get(.identifier);
         try p.expect(.space);
 
+        const before = p.nodes.len;
+        errdefer p.nodes.shrinkRetainingCapacity(before);
+
         while (true) {
             switch (try p.consume()) {
                 .identifier => {
-                    const key = p.getIndex(p.index - 1);
+                    const key = p.getTokenSlice(p.index - 1);
                     try p.expect(.equal);
                     const string = try p.get(.string);
                     if (mem.eql(u8, "file", key)) {
-                        if (is_file) return error.MultipleTargets;
-                        is_file = true;
-                        // TODO
+                        if (file != null) return error.MultipleTargets;
+                        file = @intCast(Node.Index, p.index - 3);
                     }
                 },
                 .hash => {
                     const name = try p.get(.identifier);
-                    // TODO
+                    try p.nodes.append(p.allocator, .{
+                        .tag = .tag,
+                        .token = @intCast(Node.Index, p.index - 1),
+                    });
                 },
                 .space => {},
                 .r_brace => break,
                 else => return error.InvalidMetaBlock,
             }
         }
+
+        return file;
     }
 
     const Block = union(enum) {
@@ -541,10 +639,15 @@ test "parse simple" {
         \\```
         \\
         \\The rest of the file isn't really interesting
-        \\other than `one`{.inline #block} that shows up.
+        \\other than ``one `<<inline>>``{.block #that}
+        \\shows up.
         \\
         \\```
         \\this is a block the parser won't will pick up
+        \\```
+        \\
+        \\```{.while #this}
+        \\will be picked up
         \\```
     );
     defer p.deinit();
