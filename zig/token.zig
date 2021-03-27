@@ -42,10 +42,10 @@ const Tokenizer = struct {
     const State = enum {
         start,
         fence,
-        ignore,
         identifier,
         string,
         space,
+        ignore,
         chevron,
     };
 
@@ -135,8 +135,15 @@ const Tokenizer = struct {
 
                     else => {
                         token.tag = .text;
+                        self.index += 1;
                         state = .ignore;
                     },
+                },
+
+                .ignore => switch (c) {
+                    // All valid start characters that this must break on
+                    '.', '#', '=', '\n', ' ', '`', '~', ':', 'a'...'z', 'A'...'Z', '_', '"', '<', '{', '>', '}' => break,
+                    else => {},
                 },
 
                 // states below match multi-character tokens
@@ -160,7 +167,7 @@ const Tokenizer = struct {
 
                         else => {
                             token.tag = .text;
-                            state = .ignore;
+                            break;
                         },
                     }
                 },
@@ -186,14 +193,6 @@ const Tokenizer = struct {
                 .space => switch (c) {
                     ' ' => {},
                     else => break,
-                },
-
-                .ignore => switch (c) {
-                    '\n' => {
-                        token.tag = .text;
-                        break;
-                    },
-                    else => {},
                 },
             }
         } else switch (token.tag) {
@@ -339,12 +338,17 @@ const TokenList = struct {
 
 const Tokens = std.MultiArrayList(TokenList);
 
+const RootList = std.ArrayListUnmanaged(Node.Index);
+const NameMap = std.StringHashMapUnmanaged(Node.Index);
+
 const Parser = struct {
     text: []const u8,
     allocator: *Allocator,
     index: usize,
     tokens: Tokens.Slice,
     nodes: NodeList,
+    roots: RootList,
+    name_map: NameMap,
 
     const log = std.log.scoped(.parser);
 
@@ -366,13 +370,17 @@ const Parser = struct {
             .tokens = tokens.toOwnedSlice(),
             .index = 0,
             .nodes = NodeList{},
+            .name_map = NameMap{},
             .allocator = allocator,
+            .roots = RootList{},
         };
     }
 
     pub fn deinit(p: *Parser) void {
         p.tokens.deinit(p.allocator);
         p.nodes.deinit(p.allocator);
+        p.roots.deinit(p.allocator);
+        p.name_map.deinit(p.allocator);
         p.* = undefined;
     }
 
@@ -391,24 +399,14 @@ const Parser = struct {
         log.debug("expect  | {s}", .{@tagName(tag)});
     }
 
-    fn skip(p: *Parser, tags: []Token.Tag) bool {
-        const token = p.peek();
-        for (tags) |tag| if (tag == token) {
-            log.debug("skip    | {s}", .{@tagName(token)});
-            p.index += 1;
-            return true;
-        };
-        return false;
-    }
-
     fn get(p: *Parser, tag: Token.Tag) ![]const u8 {
         defer p.index += 1;
         if (p.peek() != tag) {
             log.debug("expected {s} found {s}", .{ @tagName(tag), @tagName(p.peek().?) });
             return error.UnexpectedToken;
         }
-        log.debug("get     | {s}", .{@tagName(tag)});
         const slice = p.getTokenSlice(p.index);
+        log.debug("get     | {s} (( {s} ))", .{ @tagName(tag), slice });
         return slice;
     }
 
@@ -441,6 +439,31 @@ const Parser = struct {
         for (p.nodes.items(.tag)) |tag| log.debug("node {s}", .{@tagName(tag)});
     }
 
+    fn addTagNames(p: *Parser, block: Node.Index) !void {
+        const tags = p.nodes.items(.tag);
+        const tokens = p.nodes.items(.token);
+
+        {
+            var i = block - 1;
+            while (true) : (i -= 1) {
+                switch (tags[i]) {
+                    .filename => {},
+                    .tag => {
+                        const name = p.getTokenSlice(tokens[i]);
+                        const result = try p.name_map.getOrPut(p.allocator, name);
+                        if (result.found_existing) return error.NameConflict;
+                        result.entry.value = block;
+                    },
+                    // no other type of node found above belongs to the given
+                    // block thus this is a safe assumption
+                    else => break,
+                }
+
+                if (i == 0) break;
+            }
+        }
+    }
+
     fn parseFencedBlock(p: *Parser) !void {
         const tokens = p.tokens.items(.tag);
         const fence = (p.get(.fence) catch unreachable).len;
@@ -451,6 +474,7 @@ const Parser = struct {
 
         const filename = try p.parseMetaBlock();
         try p.expect(.newline);
+
         log.debug("<< fenced block start >>", .{});
 
         const block_start = p.index;
@@ -472,11 +496,14 @@ const Parser = struct {
                 .tag = .filename,
                 .token = file,
             });
+            try p.roots.append(p.allocator, @intCast(u16, p.nodes.len));
+            try p.addTagNames(@intCast(Node.Index, p.nodes.len));
             try p.nodes.append(p.allocator, .{
                 .tag = .file,
                 .token = @intCast(Node.Index, block_start),
             });
         } else {
+            try p.addTagNames(@intCast(Node.Index, p.nodes.len));
             try p.nodes.append(p.allocator, .{
                 .tag = .block,
                 .token = @intCast(Node.Index, block_start),
@@ -517,6 +544,7 @@ const Parser = struct {
         if ((try p.parseMetaBlock()) != null) return error.InlineFileBlock;
         log.debug("<< inline block start >>", .{});
 
+        try p.addTagNames(@intCast(Node.Index, p.nodes.len));
         try p.nodes.append(p.allocator, .{
             .tag = .inline_block,
             .token = @intCast(Node.Index, block_end),
@@ -550,11 +578,12 @@ const Parser = struct {
                     const string = try p.get(.string);
                     if (mem.eql(u8, "file", key)) {
                         if (file != null) return error.MultipleTargets;
+                        if (string.len <= 2) return error.InvalidFileName;
                         file = @intCast(Node.Index, p.index - 3);
                     }
                 },
                 .hash => {
-                    const name = try p.get(.identifier);
+                    try p.expect(.identifier);
                     try p.nodes.append(p.allocator, .{
                         .tag = .tag,
                         .token = @intCast(Node.Index, p.index - 1),
@@ -622,8 +651,39 @@ const Parser = struct {
     }
 };
 
+const Tree = struct {
+    text: []const u8,
+    // TODO: you can probably remove this
+    tokens: Tokens.Slice,
+    nodes: NodeList.Slice,
+    roots: []Node.Index,
+    name_map: NameMap,
+
+    pub fn parse(allocator: *Allocator, text: []const u8) !Tree {
+        var p = try Parser.init(allocator, text);
+        try p.resolve();
+        return Tree{
+            .text = p.text,
+            .tokens = p.tokens,
+            .nodes = p.nodes.toOwnedSlice(),
+            .roots = p.roots.toOwnedSlice(allocator),
+            .name_map = p.name_map,
+        };
+    }
+
+    pub fn deinit(d: *Tree, allocator: *Allocator) void {
+        d.tokens.deinit(allocator);
+        d.nodes.deinit(allocator);
+        allocator.free(d.roots);
+        d.name_map.deinit(allocator);
+    }
+};
+
+const Renderer = struct {};
+
 test "parse simple" {
-    var p = try Parser.init(std.testing.allocator,
+    // TODO: more tests
+    var tree = try Tree.parse(std.testing.allocator,
         \\This is an example file with some text that will
         \\cause the tokenizer to fill the token slice with
         \\garbage until the block below is reached.
@@ -631,7 +691,7 @@ test "parse simple" {
         \\To make sure sequences with strings that "span
         \\multiple lines" are handled it's placed here.
         \\
-        \\```{.this file="is.ok"}
+        \\```{.this file="is.ok" #and-can-have-tags}
         \\code follows which will again generage garbage
         \\however! <<this-block-is-not>> and some of the
         \\<<code-that-follows-like-this>> will be spliced
@@ -650,6 +710,14 @@ test "parse simple" {
         \\will be picked up
         \\```
     );
-    defer p.deinit();
-    try p.resolve();
+    defer tree.deinit(std.testing.allocator);
+
+    const root = tree.roots[0];
+    const tags = tree.tokens.items(.tag);
+    const node_tokens = tree.nodes.items(.token);
+
+    testing.expectEqual(root, tree.name_map.get("and-can-have-tags").?);
+    testing.expectEqual(Token.Tag.l_chevron, tags[node_tokens[root + 1]]);
+    testing.expectEqual(Token.Tag.l_chevron, tags[node_tokens[root + 2]]);
+    testing.expectEqual(root + 4, tree.name_map.get("that").?);
 }
