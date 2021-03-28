@@ -327,23 +327,27 @@ const Node = struct {
         block,
         inline_block,
         placeholder,
+        end,
     };
     pub const Index = u16;
 };
 
+const TokenIndex = struct { index: Node.Index };
+
 const TokenList = struct {
     tag: Token.Tag,
-    start: Node.Index,
+    start: TokenIndex,
 };
 
 const Tokens = std.MultiArrayList(TokenList);
 
-const RootList = std.ArrayListUnmanaged(Node.Index);
+const RootIndex = struct { index: Node.Index };
+const RootList = std.ArrayListUnmanaged(RootIndex);
 const NameMap = std.StringHashMapUnmanaged(Node.Index);
 
 const Parser = struct {
     text: []const u8,
-    allocator: *Allocator,
+    gpa: *Allocator,
     index: usize,
     tokens: Tokens.Slice,
     nodes: NodeList,
@@ -352,16 +356,16 @@ const Parser = struct {
 
     const log = std.log.scoped(.parser);
 
-    pub fn init(allocator: *Allocator, text: []const u8) !Parser {
+    pub fn init(gpa: *Allocator, text: []const u8) !Parser {
         var tokens = Tokens{};
 
         var tokenizer: Tokenizer = .{ .text = text };
 
         while (tokenizer.index < text.len) {
             const token = tokenizer.next();
-            try tokens.append(allocator, .{
+            try tokens.append(gpa, .{
                 .tag = token.tag,
-                .start = @intCast(Node.Index, token.data.start),
+                .start = .{ .index = @intCast(Node.Index, token.data.start) },
             });
         }
 
@@ -371,22 +375,22 @@ const Parser = struct {
             .index = 0,
             .nodes = NodeList{},
             .name_map = NameMap{},
-            .allocator = allocator,
+            .gpa = gpa,
             .roots = RootList{},
         };
     }
 
     pub fn deinit(p: *Parser) void {
-        p.tokens.deinit(p.allocator);
-        p.nodes.deinit(p.allocator);
-        p.roots.deinit(p.allocator);
-        p.name_map.deinit(p.allocator);
+        p.tokens.deinit(p.gpa);
+        p.nodes.deinit(p.gpa);
+        p.roots.deinit(p.gpa);
+        p.name_map.deinit(p.gpa);
         p.* = undefined;
     }
 
-    fn getToken(p: *Parser, index: usize) !Token {
+    fn getToken(p: Parser, index: usize) !Token {
         const starts = p.tokens.items(.start);
-        var tokenizer: Tokenizer = .{ .text = p.text, .index = starts[index] };
+        var tokenizer: Tokenizer = .{ .text = p.text, .index = starts[index].index };
         return tokenizer.next();
     }
 
@@ -410,7 +414,7 @@ const Parser = struct {
         return slice;
     }
 
-    fn getTokenSlice(p: *Parser, index: usize) []const u8 {
+    fn getTokenSlice(p: Parser, index: usize) []const u8 {
         const token = try p.getToken(index);
         return p.text[token.data.start..token.data.end];
     }
@@ -422,21 +426,20 @@ const Parser = struct {
         return token;
     }
 
-    fn peek(p: *Parser) ?Token.Tag {
+    fn peek(p: Parser) ?Token.Tag {
         const tokens = p.tokens.items(.tag);
         return if (p.index < p.tokens.len) tokens[p.index] else null;
     }
 
     pub fn resolve(p: *Parser) !void {
-        std.testing.log_level = .debug;
         while (p.findStartOfBlock()) |tag| {
-            switch (tag) {
+            const node = switch (tag) {
                 .inline_block => |start| try p.parseInlineBlock(start),
                 .fenced_block => try p.parseFencedBlock(),
-            }
+            };
+            log.debug("          block {}", .{node});
+            try p.addTagNames(node);
         }
-
-        for (p.nodes.items(.tag)) |tag| log.debug("node {s}", .{@tagName(tag)});
     }
 
     fn addTagNames(p: *Parser, block: Node.Index) !void {
@@ -450,7 +453,7 @@ const Parser = struct {
                     .filename => {},
                     .tag => {
                         const name = p.getTokenSlice(tokens[i]);
-                        const result = try p.name_map.getOrPut(p.allocator, name);
+                        const result = try p.name_map.getOrPut(p.gpa, name);
                         if (result.found_existing) return error.NameConflict;
                         result.entry.value = block;
                     },
@@ -464,7 +467,7 @@ const Parser = struct {
         }
     }
 
-    fn parseFencedBlock(p: *Parser) !void {
+    fn parseFencedBlock(p: *Parser) !Node.Index {
         const tokens = p.tokens.items(.tag);
         const fence = (p.get(.fence) catch unreachable).len;
         log.debug("<< fenced block meta >>", .{});
@@ -491,20 +494,22 @@ const Parser = struct {
 
         const block_end = p.index - 2;
 
+        var this: Node.Index = undefined;
+
         if (filename) |file| {
-            try p.nodes.append(p.allocator, .{
+            try p.nodes.append(p.gpa, .{
                 .tag = .filename,
                 .token = file,
             });
-            try p.roots.append(p.allocator, @intCast(u16, p.nodes.len));
-            try p.addTagNames(@intCast(Node.Index, p.nodes.len));
-            try p.nodes.append(p.allocator, .{
+            try p.roots.append(p.gpa, .{ .index = @intCast(Node.Index, p.nodes.len) });
+            this = @intCast(Node.Index, p.nodes.len);
+            try p.nodes.append(p.gpa, .{
                 .tag = .file,
                 .token = @intCast(Node.Index, block_start),
             });
         } else {
-            try p.addTagNames(@intCast(Node.Index, p.nodes.len));
-            try p.nodes.append(p.allocator, .{
+            this = @intCast(Node.Index, p.nodes.len);
+            try p.nodes.append(p.gpa, .{
                 .tag = .block,
                 .token = @intCast(Node.Index, block_start),
             });
@@ -512,9 +517,16 @@ const Parser = struct {
 
         try p.parsePlaceholders(block_start, block_end);
 
+        try p.nodes.append(p.gpa, .{
+            .tag = .end,
+            .token = @intCast(Node.Index, block_end),
+        });
+
         p.index = block_end + 2;
 
         log.debug("<< fenced block end >>", .{});
+
+        return this;
     }
 
     fn parsePlaceholders(p: *Parser, start: usize, end: usize) !void {
@@ -526,14 +538,18 @@ const Parser = struct {
             const name = p.get(.identifier) catch continue;
             p.expect(.r_chevron) catch continue;
 
-            try p.nodes.append(p.allocator, .{
+            log.debug(
+                "          placeholder {} token {} (( {s} ))",
+                .{ p.nodes.len, found + 1, name },
+            );
+            try p.nodes.append(p.gpa, .{
                 .tag = .placeholder,
-                .token = @intCast(Node.Index, found),
+                .token = @intCast(Node.Index, found + 1),
             });
         }
     }
 
-    fn parseInlineBlock(p: *Parser, start: usize) !void {
+    fn parseInlineBlock(p: *Parser, start: usize) !Node.Index {
         const block_end = p.index;
         p.expect(.fence) catch unreachable;
         log.debug("<< inline block meta >>", .{});
@@ -544,17 +560,25 @@ const Parser = struct {
         if ((try p.parseMetaBlock()) != null) return error.InlineFileBlock;
         log.debug("<< inline block start >>", .{});
 
-        try p.addTagNames(@intCast(Node.Index, p.nodes.len));
-        try p.nodes.append(p.allocator, .{
+        const this = @intCast(Node.Index, p.nodes.len);
+        try p.nodes.append(p.gpa, .{
             .tag = .inline_block,
-            .token = @intCast(Node.Index, block_end),
+            .token = @intCast(Node.Index, start),
         });
 
         const end = p.index;
         defer p.index = end;
 
         try p.parsePlaceholders(start, block_end);
+
+        try p.nodes.append(p.gpa, .{
+            .tag = .end,
+            .token = @intCast(Node.Index, block_end),
+        });
+
         log.debug("<< inline block end >>", .{});
+
+        return this;
     }
 
     /// Parse the metau data block which follows a fence and
@@ -584,7 +608,7 @@ const Parser = struct {
                 },
                 .hash => {
                     try p.expect(.identifier);
-                    try p.nodes.append(p.allocator, .{
+                    try p.nodes.append(p.gpa, .{
                         .tag = .tag,
                         .token = @intCast(Node.Index, p.index - 1),
                     });
@@ -604,13 +628,13 @@ const Parser = struct {
     };
 
     /// Find the start of a fenced or inline code block
-    fn findStartOfBlock(self: *Parser) ?Block {
-        const tokens = self.tokens.items(.tag);
-        const starts = self.tokens.items(.start);
+    fn findStartOfBlock(p: *Parser) ?Block {
+        const tokens = p.tokens.items(.tag);
+        const starts = p.tokens.items(.start);
 
-        while (self.index < self.tokens.len) {
+        while (p.index < p.tokens.len) {
             // search for a multi-line/inline code block `{.z
-            const block = mem.indexOfPos(Token.Tag, tokens, self.index, &.{
+            const block = mem.indexOfPos(Token.Tag, tokens, p.index, &.{
                 .fence,
                 .l_brace,
                 .dot,
@@ -623,15 +647,15 @@ const Parser = struct {
             if (newline + 1 == block or newline == block) {
                 // found fenced block
 
-                var tokenizer: Tokenizer = .{ .text = self.text, .index = starts[block] };
+                var tokenizer: Tokenizer = .{ .text = p.text, .index = starts[block].index };
                 const token = tokenizer.next();
                 assert(token.tag == .fence);
                 if (token.data.end - token.data.start >= 3) {
-                    self.index = block;
+                    p.index = block;
                     return .fenced_block;
                 } else {
                     // not a passable codeblock, skip it and keep searching
-                    self.index = block + 1;
+                    p.index = block + 1;
                 }
             } else if (mem.indexOfScalarPos(Token.Tag, tokens[0..block], newline, .fence)) |start| {
                 // found inline block TODO: fix for `` ` ``{.zig}
@@ -640,11 +664,11 @@ const Parser = struct {
                     // by the time we've verified the current block to be inline we've also
                     // found the start of the block thus we return the start to avoid
                     // searcing for it again
-                    self.index = block;
+                    p.index = block;
                     return Block{ .inline_block = start };
                 } else {
                     // not a passable codeblock, skip it and keep searching
-                    self.index = block + 1;
+                    p.index = block + 1;
                 }
             }
         } else return null;
@@ -656,30 +680,84 @@ const Tree = struct {
     // TODO: you can probably remove this
     tokens: Tokens.Slice,
     nodes: NodeList.Slice,
-    roots: []Node.Index,
+    roots: []RootIndex,
     name_map: NameMap,
 
-    pub fn parse(allocator: *Allocator, text: []const u8) !Tree {
-        var p = try Parser.init(allocator, text);
+    pub fn parse(gpa: *Allocator, text: []const u8) !Tree {
+        var p = try Parser.init(gpa, text);
         try p.resolve();
         return Tree{
             .text = p.text,
             .tokens = p.tokens,
             .nodes = p.nodes.toOwnedSlice(),
-            .roots = p.roots.toOwnedSlice(allocator),
+            .roots = p.roots.toOwnedSlice(gpa),
             .name_map = p.name_map,
         };
     }
 
-    pub fn deinit(d: *Tree, allocator: *Allocator) void {
-        d.tokens.deinit(allocator);
-        d.nodes.deinit(allocator);
-        allocator.free(d.roots);
-        d.name_map.deinit(allocator);
+    fn getToken(tree: Tree, index: usize) Token {
+        const starts = tree.tokens.items(.start);
+        var tokenizer: Tokenizer = .{ .text = tree.text, .index = starts[index].index };
+        return tokenizer.next();
+    }
+
+    pub fn getTokenSlice(tree: Tree, index: Node.Index) []const u8 {
+        const token = tree.getToken(index);
+        return tree.text[token.data.start..token.data.end];
+    }
+
+    pub fn deinit(d: *Tree, gpa: *Allocator) void {
+        d.tokens.deinit(gpa);
+        d.nodes.deinit(gpa);
+        gpa.free(d.roots);
+        d.name_map.deinit(gpa);
+    }
+
+    pub fn render(tree: Tree, arena: *Allocator, root: RootIndex, writer: anytype) !void {
+        const log = std.log.scoped(.render);
+
+        const tags = tree.nodes.items(.tag);
+        const tokens = tree.nodes.items(.token);
+        const starts = tree.tokens.items(.start);
+
+        var stack = std.ArrayList(struct { node: Node.Index, offset: usize }).init(arena);
+        try stack.append(.{
+            .node = root.index + 1,
+            .offset = starts[tokens[root.index]].index,
+        });
+
+        while (stack.items.len > 0) {
+            log.debug("depth {}", .{stack.items.len});
+
+            const index = stack.items.len - 1;
+            const item = stack.items[index];
+            stack.items[index].offset = starts[tokens[item.node]].index;
+
+            if (tags[item.node] != .placeholder) {
+                assert(tags[item.node] == .end);
+                const end = starts[tokens[item.node] - 1].index;
+                try writer.writeAll(tree.text[item.offset..end]);
+                _ = stack.pop();
+                continue;
+            }
+
+            stack.items[index].node += 1;
+
+            const slice = tree.getTokenSlice(tokens[item.node]);
+            const node = tree.name_map.get(slice) orelse return error.UnboundPlaceholder;
+            const end = starts[tokens[item.node] - 1].index;
+
+            try writer.writeAll(tree.text[item.offset..end]);
+
+            for (stack.items) |prev| if (prev.node == node) return error.CycleDetected;
+
+            try stack.append(.{
+                .node = node + 1,
+                .offset = starts[tokens[node]].index,
+            });
+        }
     }
 };
-
-const Renderer = struct {};
 
 test "parse simple" {
     // TODO: more tests
@@ -716,8 +794,44 @@ test "parse simple" {
     const tags = tree.tokens.items(.tag);
     const node_tokens = tree.nodes.items(.token);
 
-    testing.expectEqual(root, tree.name_map.get("and-can-have-tags").?);
-    testing.expectEqual(Token.Tag.l_chevron, tags[node_tokens[root + 1]]);
-    testing.expectEqual(Token.Tag.l_chevron, tags[node_tokens[root + 2]]);
-    testing.expectEqual(root + 4, tree.name_map.get("that").?);
+    testing.expectEqual(root.index, tree.name_map.get("and-can-have-tags").?);
+    testing.expectEqual(Token.Tag.l_chevron, tags[node_tokens[root.index + 1] - 1]);
+    testing.expectEqual(Token.Tag.l_chevron, tags[node_tokens[root.index + 2] - 1]);
+    testing.expectEqual(root.index + 5, tree.name_map.get("that").?);
+}
+
+test "render" {
+    testing.log_level = .debug;
+    var tree = try Tree.parse(std.testing.allocator,
+        \\Testing `42`{.python #number} definitions.
+        \\
+        \\```{.python file="example.zig"}
+        \\def universe(question):
+        \\    <<block>>
+        \\```
+        \\
+        \\```{.python #block}
+        \\answer = <<number>> # comment
+        \\return answer
+        \\```
+    );
+    defer tree.deinit(std.testing.allocator);
+
+    var buffer: [1024]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buffer);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+
+    defer arena.deinit();
+
+    for (tree.nodes.items(.tag)) |node| {
+        std.log.debug("{}", .{node});
+    }
+
+    try tree.render(&arena.allocator, tree.roots[0], fbs.writer());
+
+    testing.expectEqualStrings(
+        \\def universe(question):
+        \\    answer = 42 # comment
+        \\    return answer
+    , fbs.getWritten());
 }
