@@ -91,6 +91,7 @@ const Wheel = struct {
             log.debug("turning wheel {}", .{wheel});
 
             var old = self.wheels[wheel][index.*];
+            self.wheels[wheel][index.*] = .{};
 
             while (old.popFirst()) |node| {
                 node.data.due /= 64;
@@ -135,10 +136,12 @@ test {
     _ = async example.t(&w);
 
     var i: u32 = 0;
-    std.log.debug("{}", .{w.peek()});
+    std.log.debug("{}", .{fmt.fmtDuration(w.peek().?)});
+    std.log.debug("{}", .{w.tick()});
+    std.log.debug("{}", .{fmt.fmtDuration(w.peek().?)});
     while (i < 62) : (i += 1) _ = w.tick();
 
     std.log.debug("{}", .{w.tick()});
     std.log.debug("{}", .{w.tick()});
-    std.log.debug("{}", .{w.tick()});
+    std.log.debug("{}", .{fmt.fmtDuration(w.peek().?)});
 }
