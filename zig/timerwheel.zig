@@ -1,128 +1,81 @@
 const std = @import("std");
-const math = std.math;
-const fmt = std.fmt;
+const assert = std.debug.assert;
 const testing = std.testing;
+const math = std.math;
 
-pub fn TimerWheel(
-    comptime res: comptime_int,
-    comptime wheels: comptime_int,
-) type {
+pub fn Wheel(comptime res: comptime_int, comptime wheels: u3) type {
     return struct {
         wheel: [wheels][64]List = [_][64]List{[_]List{.{}} ** 64} ** wheels,
         index: [wheels]u8 = [_]u8{0} ** wheels,
 
+        fn getLevel(ticks: u64) u3 {
+            return @intCast(u3, (63 - @clz(u64, ticks | 63)) / 6);
+        }
+
         const log = std.log.scoped(.wheel);
 
-        pub const List = std.TailQueue(Entry);
-
-        pub const resolution = res;
-
-        const Self = @This();
-
+        pub const List = std.SinglyLinkedList(Entry);
         pub const Entry = struct {
-            ticks: u64,
+            ns: u64,
             frame: anyframe,
 
             pub fn format(
-                entry: Entry,
-                comptime _: []const u8,
-                options: fmt.FormatOptions,
+                value: Entry,
+                comptime fmt: []const u8,
+                options: std.fmt.FormatOptions,
                 writer: anytype,
             ) !void {
+                _ = fmt;
                 _ = options;
-                try writer.print("[ticks: {}]", .{entry.ticks});
+                try writer.print("[ns: {d}]", .{value.ns});
             }
         };
 
-        const power = blk: {
-            var table: [wheels]u64 = undefined;
-            for (table) |*level, i| level.* = math.pow(u64, 64, i);
-            break :blk table;
-        };
+        pub const Self = @This();
 
-        fn getLevel(ticks: u64) u8 {
-            for (power) |_, i| {
-                const p = ((wheels - 1) - i);
-                if (ticks >= power[p] - 1) return @intCast(u8, p);
-            }
-            unreachable;
-        }
+        pub const resolution = res;
 
-        fn getSlot(level: u8, ticks: u64) u8 {
-            if (level == 0) {
-                return @intCast(u8, ticks);
-            } else {
-                const slot = (ticks / power[level]);
-                return @intCast(u8, slot);
-            }
-        }
-
-        pub fn sleep(self: *Self, offset: u64) void {
-            self.sleepTicks(offset / resolution);
-        }
-
-        pub fn sleepTicks(self: *Self, ticks: u64) void {
+        pub fn sleep(self: *Self, nanoseconds: u64) void {
             suspend {
-                const level = getLevel(ticks);
-                const slot = getSlot(level, ticks);
-                const w_slot = (slot + self.index[level]) & 63;
+                var ticks = nanoseconds / resolution;
+                var level: u6 = getLevel(ticks);
+                var slot = ticks >> (level * 6);
+
                 var entry: List.Node = .{
                     .next = undefined,
                     .data = .{
-                        .ticks = ticks,
+                        .ns = nanoseconds,
                         .frame = @frame(),
                     },
                 };
 
-                log.debug("new entry level:{} slot:{} ticks:{} ({})", .{
-                    level,
-                    slot,
-                    ticks,
-                    fmt.fmtDuration(ticks * resolution),
-                });
+                const position = (slot + self.index[level]) & 63;
 
-                self.wheel[level][w_slot].append(&entry);
+                self.wheel[level][position].prepend(&entry);
             }
         }
 
         pub fn tick(self: *Self) List {
-            var list: List = self.wheel[0][self.index[0]];
-            self.wheel[0][self.index[0]] = .{};
+            var list: List = .{};
 
             for (self.index) |*index, wheel| {
                 while (self.wheel[wheel][index.*].popFirst()) |node| {
-                    const ticks = node.data.ticks;
+                    const old = node.data.ns;
+                    const ticks = (old >> 6) / resolution;
+                    node.data.ns >>= 6;
                     if (ticks == 0) {
-                        list.append(node);
+                        list.prepend(node);
                     } else {
-                        // reschedule
+                        var level: u6 = getLevel(ticks);
+                        var slot = ticks >> (level * 6);
 
-                        const level = getLevel(ticks);
-                        const slot = getSlot(level, ticks);
+                        const position = (slot + self.index[level]) & 63;
 
-                        const reduction = power[level] * (slot + 1);
-                        const n_ticks = math.sub(u64, ticks, reduction) catch 0;
-                        log.debug("{} <- {} ({})", .{ n_ticks, ticks, reduction });
-                        const n_level = getLevel(n_ticks);
-                        const n_slot = getSlot(n_level, n_ticks);
-                        const w_slot = (n_slot + self.index[n_level]) & 63;
-
-                        node.data.ticks = n_ticks;
-
-                        log.debug("moved entry " ++
-                            "level:{} slot:{} ticks:{} -> " ++
-                            "level:{} slot:{} ticks:{} ({}:{})", .{
-                            level,               slot,   ticks,
-                            n_level,             n_slot, n_ticks,
-                            self.index[n_level], w_slot,
-                        });
-
-                        self.wheel[n_level][w_slot].prepend(node);
+                        self.wheel[level][position].prepend(node);
                     }
                 }
 
-                index.* += 1;
-                index.* &= 63;
+                index.* = (index.* +% 1) & 63;
 
                 if (index.* != 0) break;
             }
@@ -132,39 +85,56 @@ pub fn TimerWheel(
     };
 }
 
+const W = Wheel(std.time.ns_per_ms, 6);
+pub fn delay(w: *W) void {
+    var tim = std.time.Timer.start() catch unreachable;
+    var m: u64 = 0;
+    const out = std.io.getStdOut().writer();
+    out.writeAll("expected,gotten,difference,tick\n") catch unreachable;
+    while (true) : (m += 50) {
+        const n = W.resolution * m;
+        w.sleep(n);
+        const l = tim.lap();
+        const d = @intCast(i64, l) - @intCast(i64, n);
+
+        std.log.debug("wanted {} got {} diff {}", .{
+            std.fmt.fmtDuration(n),
+            std.fmt.fmtDuration(l),
+            std.fmt.fmtDurationSigned(d),
+        });
+
+        out.print("{},{},{},{}\n", .{ n, l, d, m }) catch unreachable;
+    }
+}
+
 test {
     testing.log_level = .debug;
-    const W = TimerWheel(std.time.ns_per_ms, 6);
-    const example = struct {
-        pub fn ms(w: *W, n: u64, p: u64, r: u64) void {
-            w.sleep(std.time.ns_per_ms * n * math.pow(u64, 64, p) + r);
-        }
+    var w: W = .{};
+    _ = async delay(&w);
+
+    const os = std.os;
+    const linux = os.linux;
+    const timerfd = blk: {
+        const tmp = linux.timerfd_create(os.linux.CLOCK_MONOTONIC, linux.TFD_CLOEXEC);
+        if (linux.getErrno(tmp) != 0) return error.CannotCreateTimer;
+        const fd = @intCast(os.fd_t, tmp);
+
+        const spec: linux.itimerspec = .{
+            .it_interval = .{ .tv_sec = 0, .tv_nsec = W.resolution },
+            .it_value = .{ .tv_sec = 0, .tv_nsec = W.resolution },
+        };
+
+        const ret = linux.timerfd_settime(fd, 0, &spec, null);
+        if (ret != 0) return error.CannotStartTimer;
+
+        break :blk fd;
     };
+    defer os.close(timerfd);
 
-    var wheel: W = .{};
-    const ms = std.time.ns_per_ms;
-
-    _ = async example.ms(&wheel, 3, 0, 0);
-    _ = async example.ms(&wheel, 3, 1, 0);
-    _ = async example.ms(&wheel, 3, 2, ms * 3);
-    _ = async example.ms(&wheel, 1, 2, 0);
-
-    std.log.debug("{}", .{wheel.tick()});
-    std.log.debug("{}", .{wheel.tick()});
-    std.log.debug("{}", .{wheel.tick()});
-    std.log.debug("{}", .{wheel.tick()});
-    std.log.debug("{}", .{wheel.tick()});
-
-    for (W.power) |p| {
-        var i: u64 = 0;
-        while (i < 64) : (i += 1) {
-            const level = W.getLevel((i + 1) * p);
-            const slot = W.getSlot(level, (i + 1) * p);
-            std.log.debug("{}:{} {}", .{
-                level,
-                slot,
-                fmt.fmtDuration((i + 1) * p * ms),
-            });
-        }
+    while (true) {
+        var l: u64 = 0;
+        _ = try os.read(timerfd, std.mem.asBytes(&l));
+        var list = w.tick();
+        while (list.popFirst()) |node| resume node.data.frame;
     }
 }
