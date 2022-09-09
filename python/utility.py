@@ -1,11 +1,18 @@
 import math
-from typing import List, Any
+import random
+from typing import List, Any, Dict, Union
 
-# ---- utility system -----
+random.seed(0xcafebabedeadbeef) # ensure reproducible results
+
+# ---- infinite axis utility system -----
 
 # The framework which you'll only need to write once
 
 class Context:
+    """
+    Context in which the consideration is being evaluated in.
+    At present this consists of the characters.
+    """
     my: Any
     their: Any
 
@@ -46,12 +53,33 @@ class Action:
         self.considerations = cons
 
     def score(self, context, limit: float) -> float:
-        mod = 1 - (1 / len(self.considerations)) # type: float
-        total = self.maximum # type: float
+        mod: float = 1 - (1 / len(self.considerations))
+        total: float = self.maximum
+
         for c in self.considerations:
             if total < limit:
                 return 0
-            result = c.score(context)
+            result: float = c.score(context)
+            total *= clamp(result + (1 - result) * result * mod, 0, 1)
+        return total
+
+class Category:
+    maximum: float = 1
+    considerations: List[Consideration]
+    name: str
+
+    def __init__(self, name: str, cons: List[Consideration]):
+        self.name = name
+        self.considerations = cons
+
+    def score(self, context: Context, limit: float) -> float:
+        mod = 1 - (1 / len(self.considerations))
+        total = self.maximum # type: float
+
+        for c in self.considerations:
+            if total < limit:
+                return 0
+            result: float = c.score(context)
             total *= clamp(result + (1 - result) * result * mod, 0, 1)
         return total
 
@@ -68,35 +96,91 @@ class Point:
         self.y = y
 
     def distanceTo(self, other) -> float:
-        x = other.x - self.x
-        y = other.y - self.y
+        x: float = other.x - self.x
+        y: float = other.y - self.y
         return math.sqrt(x * x + y * y)
+
+class Score:
+    score: float
+    index: int
+
+    def __init__(self, score, index):
+        self.score = score
+        self.index = index
 
 class Character:
     position: Point
     health: float = 100
     max_health: float = 100
-    actions: List[Action]
+    categories: List[Category]
+    action_sets: Dict[str, List[Action]]
 
-    def __init__(self, pos, actions):
-        self.position = pos
-        self.actions = actions
+
+    def __init__(self, init):
+        self.position = init["position"]
+        self.categories = init["categories"]
+        self.action_sets = init["action_sets"]
 
     def act(self, them):
-        scores = []
-        limit = 0
-        for index, action in enumerate(self.actions):
-            result = action.score(Context(self, them), limit)
-            print(action.name, "confidence", result)
-            scores += [(result, index)]
+        # For single utility, treat the "category" as the action
+        # list and return the best entry.
 
-            if (result > limit): # short circuit
-                limit = result
+        sets = self.score(self.categories, them, True)
+        best_category = self.categories[sets[0].index].name
+        print("selecting actions from category", best_category)
 
-        scores = sorted(scores, key=lambda x: x[0])
-        best = scores[len(scores) - 1][1]
-        print(self.actions[best].name, "chosen")
-        return self.actions[best]
+        # Dual utility allows the programmer to control which actions
+        # are available after evaluating the situation the character
+        # is in thus providing greater creative control.
+        #
+        # e.g a character should never execute a wave emote during
+        #     combat, with regular utility that can happen if weighted
+        #     selection is in use or the emote isn't weighed down by
+        #     threat measurement. Dual utility solves this as emotes
+        #     won't be considered in combat situations.
+
+        category = self.action_sets[best_category]
+        actions = self.score(category, them, False)
+
+        # -- weighted selection --
+
+        # figure out the total
+        top = 0
+        for a in actions:
+            top += a.score
+
+        # pick a value at random within the range
+        chosen = random.random() * top
+        total = 0
+
+        # find the action score which causes the total to equal or exceed
+        # the chosen value
+        for a in actions:
+            total += abs(a.score)
+            if total >= chosen:
+                return category[a.index]
+
+        assert False # unreachable
+
+    def score(self, actions: Union[List[Action], List[Category]], them, limited: bool):
+        scores: List[Score]= []
+        limit: float = 0 # allow all, can be used to cull low value actions
+        index: int = 0
+        if limited:
+            for action in actions:
+                result = action.score(Context(self, them), limit)
+                if result > limit: limit = result
+                print("{} confidence: {:.2f}".format(action.name, result))
+                scores += [Score(result, index)]
+                index += 1
+        else:
+            for action in actions:
+                result = action.score(Context(self, them), limit)
+                print("{} confidence: {:.2f}".format(action.name, result))
+                scores += [Score(result, index)]
+                index += 1
+
+        return sorted(scores, key=lambda x: -x.score)
 
 # ---- considerations ----
 
@@ -141,13 +225,30 @@ class ConDistance(Consideration):
         dist = clamp(dist, 0, self.max_distance)
         return (self.max_distance - dist) / self.max_distance
 
+class ConDistanceAway(Consideration):
+    """
+    Confidence is tied to the distance from the character's target
+    where the further away the target is; the more interesting they
+    become.
+    """
+    max_distance: float
+
+    def __init__(self, distance):
+        self.max_distance = distance
+
+    def score(self, context) -> float:
+        dist = context.my.position.distanceTo(context.their.position)
+        dist = clamp(dist, 0, self.max_distance)
+        return dist / self.max_distance
+
+
 class ConWeak(Consideration):
     """
     Confidence is high when enemy health is low.
     Here we clamp so it doesn't fall too low.
     """
     def score(self, context) -> float:
-        return clamp((context.their.max_health - context.their.health) / context.their.max_health, 0.8, 1)
+        return clamp((context.their.max_health - context.their.health) / context.their.max_health, 0.3, 1)
 
 class ConStrong(Consideration):
     """
@@ -155,8 +256,7 @@ class ConStrong(Consideration):
     Here we clamp so it doesn't fall too low.
     """
     def score(self, context) -> float:
-        return clamp(context.their.health / context.their.max_health, 0.6, 1)
-
+        return clamp(context.their.health / context.their.max_health, 0.3, 1)
 
 # ---- Actions ----
 
@@ -166,28 +266,22 @@ class ConStrong(Consideration):
 # aggressive and as the distance increases the desire to perform either falls
 # as the target is likely too far away.
 
-class ActFlee(Action):
-    """
-    Flee when damaged, close, and the enemy is strong
-    """
-
+class ActSwordAttack(Action):
     def __init__(self):
-        super().__init__("Flee", [
-            ConDamage(),     # the desire to flee increases as damage increases
-            ConDistance(20), # the desire to flee decreases with distance
-            ConStrong()      # the desire to flee is higher when the enemy is healthy
+        super().__init__("SwordAttack", [
+            ConDistance(5)
         ])
 
-class ActAttack(Action):
-    """
-    Attack when healthy, close, and the enemy is weak
-    """
-
+class ActArrowAttack(Action):
     def __init__(self):
-        super().__init__("Attack", [
-            ConHealth(),     # the desire to attack increases as health increases
-            ConDistance(20), # the desire to attack increases the closer the enemy is
-            ConWeak()        # the desire to attack increases as the enemy becomes weaker
+        super().__init__("ArrowAttack", [
+            ConDistanceAway(20)
+        ])
+
+class ActRun(Action):
+    def __init__(self):
+        super().__init__("Run", [
+            ConDistance(5)
         ])
 
 # You can define other actions the same way by just composing a list of things
@@ -219,22 +313,78 @@ class ActAttack(Action):
 #
 #        Health                       Health
 
+# ---- Categories ----
+
+# Before selecting an action however we need to select a category (action set)
+# to evaluate actions from. Separating actions into categories gives more control
+# over which actions can be chosen given the current sitation to avoid characters
+# picking really dumb actions to execute.
+
+class CatFlee(Action):
+    """
+    Flee when damaged, close, and the enemy is strong
+    """
+
+    def __init__(self):
+        super().__init__("Flee", [
+            ConDamage(),     # the desire to flee increases as damage increases
+            ConDistance(20), # the desire to flee decreases with distance
+            ConStrong()      # the desire to flee is higher when the enemy is healthy
+        ])
+
+class CatAttack(Action):
+    """
+    Attack when healthy, close, and the enemy is weak
+    """
+
+    def __init__(self):
+        super().__init__("Attack", [
+            ConHealth(),     # the desire to attack increases as health increases
+            ConDistance(20), # the desire to attack increases the closer the enemy is
+            ConWeak()        # the desire to attack increases as the enemy becomes weaker
+        ])
+
 # ---- Game ----
 
-player = Character(
-    Point(2, 5),
-    [ ActFlee(), ActAttack() ],
-)
+player = Character({
+    "position": Point(2, 5),
+    "categories": [ CatAttack(), CatFlee() ],
+    "action_sets": {
+        "Attack": [
+            ActSwordAttack(),
+            ActArrowAttack()
+        ],
+        "Flee": [
+            ActArrowAttack(),
+            ActRun()
+        ],
+    }
+})
 
-monster = Character(
-    Point(5, 5),
-    [ ActFlee(), ActAttack() ],
-)
+foe = Character({
+    "position": Point(5, 5),
+    "categories": [ CatAttack(), CatFlee() ],
+    "action_sets": {
+        "Attack": [
+            ActSwordAttack(),
+            ActArrowAttack()
+        ],
+        "Flee": [
+            ActArrowAttack(),
+            ActRun()
+        ],
+    }
+})
 
-print("player", player.act(monster).name)
-print("monster", monster.act(player).name)
-monster.health = 30
+print("player", player.act(foe).name, "<-- both are equal here")
+print("foe",    foe.act(player).name, "<-- same behaviour, same status, same attack")
+foe.health = 30
 player.health = 50
-print("monster", monster.act(player).name)
-print("player", player.act(monster).name)
+print("player", player.act(foe).name, "<-- confident that the enemy will be defeated")
+print("foe",    foe.act(player).name, "<-- injured, too close, has had enough and is now on the run")
+player.position.x = 0
+player.position.y = 0
+foe.position.y = 13
+print("player", player.act(foe).name, "<-- too far to attack with a sword")
+print("foe",    foe.act(player).name, "<-- assumes it's safe to attack from a distance")
 
