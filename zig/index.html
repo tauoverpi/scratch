@@ -1,18 +1,49 @@
-<!DOCTYPE html5>
+<!DOCTYPE html>
 <html>
-  <head>
-    <title>recovery</title>
-  </head>
+  <head></head>
   <body>
+    <canvas id="surface" width="720" height="480"></canvas>
     <script>
-      const thing = () => {
-        fetch("/", {
-          method: "POST",
-          body: '{"jsonrpc":"2.0","method":"ping"}'
-        }).then(response => response.json())
-          .then(_ => window.setTimeout(thing, 3000));
-      };
-      thing();
+const main = async () => {
+    console.log("setting up");
+    const canvas = document.getElementById('surface');
+    const surface = canvas.getContext('2d');
+
+    var framebuffer = undefined;
+    const lib = {
+        env: {
+            blit: () => surface.putImageData(framebuffer, 0, 0),
+        },
+    };
+
+    const wasm = await WebAssembly.instantiateStreaming(fetch("index.wasm"), lib);
+
+    { // setup the framebuffer
+        const framebuffer_ptr = wasm.instance.exports.getFramebuffer();
+        const bytes = new Uint8ClampedArray(
+            wasm.instance.exports.memory.buffer,
+            framebuffer_ptr,
+            480 * 720 * 4
+        );
+        framebuffer = new ImageData(bytes, 720, 480);
+    }
+
+    // get the inital time
+    wasm.instance.exports.init(window.performance.now());
+
+    // main loop
+    const loop = time => {
+        if (wasm.instance.exports.step(time) == 0) {
+            requestAnimationFrame(loop)
+        } else {
+            console.log("exit");
+        }
+    };
+
+    loop();
+}
+
+main();
     </script>
   </body>
 </html>
