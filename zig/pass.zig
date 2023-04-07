@@ -5,7 +5,7 @@ const os = std.os;
 const fmt = std.fmt;
 const mem = std.mem;
 const scrypt = std.crypto.pwhash.scrypt;
-const hmac = std.crypto.auth.hmac.sha2.HmacSha256;
+const hmac = std.crypto.auth.hmac.sha2.HmacSha512;
 const base64 = std.base64.standard_no_pad;
 
 const writer = std.io.getStdOut().writer();
@@ -67,7 +67,7 @@ pub fn main() !u8 {
 
 fn get(c: u8, x: u8) u8 {
     switch (c) {
-        inline 'V', 'C', 'v', 'c', 'A', 'a', 'n', 'o', 'x' => |m| {
+        inline 'V', 'C', 'v', 'c', 'A', 'a', 'n', 'o', 'x', 'X' => |m| {
             const cls = @field(class, &.{m});
 
             return cls[x % cls.len];
@@ -89,9 +89,12 @@ const class = .{
     .n = "123456789",
     .o = "@&%?,=[]_:-+*$#!'^~;()/.",
     .x = "AEIOUaeiouBCDFGHJKLMNPQRSTVWXYZbcdfghjklmnpqrstvwxyz0123456789!@#$%^&*()",
+    .X = "AEIOUaeiouBCDFGHJKLMNPQRSTVWXYZbcdfghjklmnpqrstvwxyz0123456789!@#$%^&*()_-+={[}]:;\"'\\|<,>.?/~` ",
 };
 
 const template = .{
+    .@"64" = &[_][]const u8{"xXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXx"},
+    .@"32" = &[_][]const u8{"xXXXXXXXXXXXXXXXXXXXXXXXXXXXXXx"},
     .max = &[_][]const u8{
         "anoxxxxxxxxxxxxxxxxx",
         "axxxxxxxxxxxxxxxxxno",
