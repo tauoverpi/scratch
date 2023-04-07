@@ -38,11 +38,7 @@ pub fn main() !u8 {
 
     var key: [64]u8 = undefined;
 
-    try scrypt.kdf(gpa, &key, secret, seed, .{
-        .ln = 15,
-        .r = 8,
-        .p = 2,
-    });
+    try scrypt.kdf(gpa, &key, secret, seed, scrypt.Params.sensitive);
 
     const m_seed = try fmt.allocPrint(gpa, "{d}.{s}.{d}", .{ site.len, site, count });
 
