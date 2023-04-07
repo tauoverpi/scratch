@@ -25,6 +25,7 @@ pub fn main() !u8 {
             \\  password      Master password
             \\  site          Website which the password is scoped to
             \\  counter       Iteration of the password
+            \\
         );
         return 1;
     }
