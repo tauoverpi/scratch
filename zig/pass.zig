@@ -34,13 +34,11 @@ pub fn main() !u8 {
     const site = mem.span(os.argv[3]);
     const count = try std.fmt.parseInt(u8, mem.span(os.argv[4]), 10);
 
-    const seed = try fmt.allocPrint(gpa, "{d}.{s}", .{ name.len, name });
-
     var key: [64]u8 = undefined;
 
-    try scrypt.kdf(gpa, &key, secret, seed, scrypt.Params.sensitive);
+    try scrypt.kdf(gpa, &key, secret, name, scrypt.Params.sensitive);
 
-    const m_seed = try fmt.allocPrint(gpa, "{d}.{s}.{d}", .{ site.len, site, count });
+    const m_seed = try fmt.allocPrint(gpa, "{s}.{d}", .{ site, count });
 
     var mac: [hmac.mac_length]u8 = undefined;
     hmac.create(&mac, m_seed, &key);
