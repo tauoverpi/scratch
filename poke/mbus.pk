@@ -1,0 +1,125 @@
+/* mbus.pk - MBUS implementation */
+
+/* Copyright (C) 2023 Simon A. Nielsen Knights */
+
+/* This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+type MBUS_Data_Information_Field =
+    struct
+    {
+        uint<4> _type;
+        uint<2> function;
+        uint<1> storage;
+        uint<1> more;
+    };
+
+type MBUS_Data_Information_Extension =
+    struct
+    {
+        uint<5> storage;
+        uint<1> tariff;
+        uint<1> _unit;
+        uint<1> more;
+    };
+
+type MBUS_Data_Information_Block =
+    struct
+    {
+        MBUS_Data_Information_Field dif;
+        if (dif.more)
+            MBUS_Data_Information_Extension[] dife;
+    };
+
+
+type MBUS_Value_Information_Block =
+    struct
+    {
+        uint<8> vif;
+    };
+
+type MBUS_Object =
+    struct
+    {
+        MBUS_Data_Information_Block dib : dib.dif._type != 0xf;
+        MBUS_Value_Information_Block vib;
+        union
+        {
+            struct {} nodata : dib.dif._type == 0;
+            uint<8> uint_8 : dib.dif._type == 1;
+            uint<16> uint_16 : dib.dif._type == 2;
+            uint<24> uint_24 : dib.dif._type == 3;
+            uint<32> uint_32 : dib.dif._type == 4;
+            uint<32> real_32 : dib.dif._type == 5;
+            uint<48> uint_48 : dib.dif._type == 6;
+            uint<64> uint_64 : dib.dif._type == 7;
+            struct {} readout : dib.dif._type == 8;
+            uint<8> bcd_2 : dib.dif._type == 9;
+            uint<16> bcd_4 : dib.dif._type == 10;
+            uint<24> bcd_6 : dib.dif._type == 11;
+            uint<32> bcd_8 : dib.dif._type == 12;
+            // variable,
+            uint<48> bcd_12 : dib.dif._type == 14;
+        } value;
+    };
+
+type MBUS_Link_Reset =
+    struct
+    {
+        uint<8> control : control == 0x40;
+        uint<8> address;
+    };
+
+type MBUS_Control =
+    struct
+    {
+        uint<8> control;
+        uint<8> address;
+        uint<8> info;
+    };
+
+type MBUS_Long =
+    struct
+    {
+        uint<8> control;
+        uint<8> address;
+        uint<8> info : info == 0x72;
+    };
+
+type MBUS_Packet =
+    struct
+    {
+        uint<8> start_byte : start_byte == 0x68;
+        offset<uint<8>,B> length;
+        offset<uint<8>,B> check_length : length == check_length;
+        uint<8> end_byte : start_byte == end_byte;
+
+        union
+        {
+            MBUS_Link_Reset link_reset : length == 2#B;
+            MBUS_Control control : length == 3#B;
+            MBUS_Long _long : length > 3#B;
+        } body;
+
+        uint<8> checksum;
+        uint<8> stop; // : stop == 0x16;
+
+        method calculate_checksum = uint<8>:
+        {
+            var sum = 0;
+            for (var o = 4#B; o < (length - 2#B); o++) sum += uint<8> @ o;
+            return sum;
+        }
+    };
+
